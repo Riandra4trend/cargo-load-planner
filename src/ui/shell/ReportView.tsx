@@ -4,7 +4,8 @@ import { createPortal, flushSync } from 'react-dom';
 import { TEMP_LABELS } from '../../domain/colors';
 import { DISCLAIMER } from '../../domain/settings';
 import type { Plan, Vehicle } from '../../domain/types';
-import { formatDims, formatLength, formatMass, formatNumber, formatPercent, formatWeight } from '../../domain/units';
+import { formatConsumption, formatDims, formatDistance, formatFuel, formatLength, formatMass, formatMoney, formatPercent, formatWeight } from '../../domain/units';
+import { routeKm } from '../../physics/fuel';
 import { loadingSequence } from '../../sim/sequence';
 import { evaluatePlan, type VehicleEval } from '../../state/evaluate';
 import { useDisplayPlan } from '../../state/hooks';
@@ -16,7 +17,51 @@ import { PlanDiagram, PlanLegend } from './PlanDiagram';
 import { formatPlanDate, lowerFirst, SEVERITY_LABEL, SEVERITY_ORDER, STATUS_TEXT, stageShort, weightPair } from './shellFormat';
 
 const DIAGRAM_WIDTH = 700;
-const KM_PER_MI = 1.609344;
+
+function FuelReport({ plan, ve }: { plan: Plan; ve: VehicleEval }) {
+  const sys = plan.settings.units;
+  const f = ve.fuel;
+  if (!f.legs.length) return <p className="text-[11.5px] text-muted">No cargo on this vehicle, so it does not drive the route.</p>;
+  return (
+    <>
+      <table className="w-full text-[11px]">
+        <thead>
+          <tr className="text-left text-[10px] uppercase tracking-wide text-muted">
+            <th className="py-1 pr-2">Leg</th>
+            <th className="px-2 py-1 text-right">Distance</th>
+            <th className="px-2 py-1 text-right">Cargo aboard</th>
+            <th className="px-2 py-1 text-right">Consumption</th>
+            <th className="py-1 pl-2 text-right">Fuel</th>
+          </tr>
+        </thead>
+        <tbody>
+          {f.legs.map((leg) => (
+            <tr key={leg.label} className="border-t border-line">
+              <td className="py-1 pr-2">
+                {leg.label}
+                {leg.cold && <span className="text-muted"> · reefer on</span>}
+              </td>
+              <td className="num px-2 py-1 text-right font-mono text-[10.5px]">{formatDistance(leg.km, sys, 1)}</td>
+              <td className="num px-2 py-1 text-right font-mono text-[10.5px]">{formatMass(leg.cargoKg, sys)}</td>
+              <td className="num px-2 py-1 text-right font-mono text-[10.5px]">{formatConsumption(leg.lPer100km, sys)}</td>
+              <td className="num py-1 pl-2 text-right font-mono text-[10.5px]">{formatFuel(leg.litres, sys)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="mt-1.5 text-[11px]">
+        <span className="font-semibold">
+          Total {formatFuel(f.totalL, sys)} · {formatMoney(f.cost, plan.settings.currency)} · CO₂ {formatMass(f.co2Kg, sys)}
+        </span>
+        <span className="text-muted">
+          {' '}
+          · driving {formatFuel(f.drivingL, sys)} ({formatConsumption(f.avgLPer100km, sys)} average){f.reeferL > 0 ? ` · reefer ${formatFuel(f.reeferL, sys)}` : ''} · idling {formatFuel(f.idleL, sys)} ·{' '}
+          {formatPercent(f.tankShare)} of the {formatFuel(ve.vehicle.fuel.tankL, sys, 0)} tank
+        </span>
+      </p>
+    </>
+  );
+}
 
 function MetaItem({ label, value }: { label: string; value: string }) {
   return (
@@ -118,6 +163,9 @@ function VehicleReport({ plan, ve }: { plan: Plan; ve: VehicleEval }) {
         </tbody>
       </table>
 
+      <H>Fuel estimate</H>
+      <FuelReport plan={plan} ve={ve} />
+
       <H>Violations and warnings</H>
       {ve.violations.length === 0 ? (
         <p className="text-[11.5px] text-ok">All checks pass at departure and after every stop.</p>
@@ -172,11 +220,12 @@ export function ReportView({ plan }: { plan: Plan }) {
         <MetaItem label="Departure" value={`${formatPlanDate(m.date)} ${m.date.slice(0, 4)}, ${m.time}`} />
         <MetaItem label="Dock" value={m.dock} />
         <MetaItem label="Route" value={`${m.route ? `${m.route} · ` : ''}${plan.stops.length} stops`} />
-        <MetaItem label="Distance" value={m.distanceKm > 0 ? (sys === 'metric' ? `${formatNumber(m.distanceKm, 0)} km` : `${formatNumber(m.distanceKm / KM_PER_MI, 0)} mi`) : ''} />
+        <MetaItem label="Distance" value={routeKm(plan) > 0 ? formatDistance(routeKm(plan), sys) : ''} />
         <MetaItem label="Driver" value={m.driver} />
         <MetaItem label="Vehicles" value={plan.vehicles.map((v) => v.name).join(', ')} />
         <MetaItem label="Total cargo" value={`${formatMass(evaluation.totalKg, sys)} · ${evaluation.units.length} units`} />
         <MetaItem label="Orders loaded" value={`${evaluation.orders.loaded} of ${evaluation.orders.total}`} />
+        <MetaItem label="Fuel (estimate)" value={evaluation.fuel.litres > 0 ? `${formatFuel(evaluation.fuel.litres, sys)} · ${formatMoney(evaluation.fuel.cost, plan.settings.currency)}` : ''} />
       </dl>
       {m.notes && <p className="mt-2 whitespace-pre-wrap rounded border border-line p-2 text-[11px]">{m.notes}</p>}
 

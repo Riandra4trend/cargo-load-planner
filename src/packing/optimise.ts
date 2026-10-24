@@ -39,15 +39,18 @@ export function optimise(req: OptimiseRequest, onProgress?: (fraction: number) =
   const t0 = performance.now();
   const budget = Math.max(0, req.timeBudgetMs);
   const deadline = t0 + budget;
+  const cap = req.maxIterations === undefined ? Number.POSITIVE_INFINITY : Math.max(1, req.maxIterations);
   const pr = buildProblem(req);
   const rng = mulberry32(req.seed);
   let iterations = 0;
+  /** Search progress 0..1: by iterations when capped, else by elapsed time. */
+  const schedule = () => (Number.isFinite(cap) ? Math.min(1, iterations / cap) : budget > 0 ? Math.min(1, (performance.now() - t0) / budget) : 1);
   let lastProgress = t0;
   const progress = () => {
     const now = performance.now();
     if (onProgress && now - lastProgress >= PROGRESS_MS) {
       lastProgress = now;
-      onProgress(budget > 0 ? Math.min(0.99, (now - t0) / budget) : 0.99);
+      onProgress(Math.min(0.99, schedule()));
     }
   };
   let slowest = 0;
@@ -60,8 +63,8 @@ export function optimise(req: OptimiseRequest, onProgress?: (fraction: number) =
     progress();
     return { g, layout, sc };
   };
-  /** Another evaluation still fits in the budget (the first one always runs). */
-  const hasTime = () => performance.now() + slowest <= deadline;
+  /** Another evaluation still fits in the iteration cap and the time budget (the first one always runs). */
+  const hasTime = () => iterations < cap && performance.now() + slowest <= deadline;
   const keys: SortKey[] = ['volume', 'weight', 'area'];
   /** Best of the initial item orders (and `first`), then shifted toward the centre of the COG window. */
   const starts = (first: Evaluated | null): Evaluated => {
@@ -84,10 +87,10 @@ export function optimise(req: OptimiseRequest, onProgress?: (fraction: number) =
   let best: Evaluated;
   if (pr.keepExisting) {
     best = evaluate(initialGenome(pr, 'volume', false));
-    if (!isClean(best.sc) && hasTime()) best = anneal(pr, starts(best), rng, evaluate, t0, deadline, hasTime);
+    if (!isClean(best.sc) && hasTime()) best = anneal(pr, starts(best), rng, evaluate, schedule, hasTime);
   } else {
     best = starts(null);
-    if (pr.units.length) best = anneal(pr, best, rng, evaluate, t0, deadline, hasTime);
+    if (pr.units.length) best = anneal(pr, best, rng, evaluate, schedule, hasTime);
   }
   const result = finish(pr, best, iterations, t0);
   onProgress?.(1);
@@ -119,15 +122,13 @@ function balancedGenome(e: Evaluated): Genome | null {
   return changed ? g : null;
 }
 
-function anneal(pr: Problem, start: Evaluated, rng: () => number, evaluate: (g: Genome) => Evaluated, t0: number, deadline: number, hasTime: () => boolean): Evaluated {
+function anneal(pr: Problem, start: Evaluated, rng: () => number, evaluate: (g: Genome) => Evaluated, schedule: () => number, hasTime: () => boolean): Evaluated {
   let best = start;
   let cur = start;
-  const span = Math.max(1, deadline - t0);
   const t0Temp = Math.min(20_000, Math.max(300, start.sc.total * 0.02));
   let sinceImprovement = 0;
   while (hasTime()) {
-    const frac = Math.min(1, (performance.now() - t0) / span);
-    const temp = t0Temp * Math.pow(1e-3, frac);
+    const temp = t0Temp * Math.pow(1e-3, schedule());
     const cand = evaluate(mutate(pr, cur, rng));
     const delta = cand.sc.total - cur.sc.total;
     if (delta < 0 || rng() < Math.exp(-delta / temp)) cur = cand;

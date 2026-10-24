@@ -1,4 +1,6 @@
-import type { Plan } from '../domain/types';
+import { defaultFuelProfile } from '../domain/presets';
+import { defaultSettings } from '../domain/settings';
+import type { Plan, PlanMeta } from '../domain/types';
 
 /** Triggers a browser download of a Blob. */
 export function downloadBlob(blob: Blob, filename: string): void {
@@ -26,6 +28,27 @@ export function downloadPlanJson(plan: Plan): void {
   downloadBlob(new Blob([JSON.stringify(plan, null, 2)], { type: 'application/json' }), `${fileSlug(plan.name)}.loadplan.json`);
 }
 
+/**
+ * Fills fields added after a plan was saved (fuel profiles and settings, per-stop leg distances, the
+ * return leg), so older files, share links and autosaves keep loading. A legacy route total is spread
+ * evenly over the stops that have no leg distance.
+ */
+function upgradePlan(plan: Plan): Plan {
+  plan.settings = { ...defaultSettings(), ...plan.settings };
+  const meta = plan.meta as PlanMeta & { distanceKm?: number };
+  const legacyKm = meta.distanceKm;
+  delete meta.distanceKm;
+  if (typeof meta.returnKm !== 'number' || !Number.isFinite(meta.returnKm)) meta.returnKm = 0;
+  const missing = plan.stops.filter((s) => s && s.distanceKm === undefined);
+  if (typeof legacyKm === 'number' && legacyKm > 0 && missing.length) {
+    const known = plan.stops.reduce((sum, s) => sum + (s?.distanceKm ?? 0), 0);
+    const each = Math.max(0, legacyKm - known) / missing.length;
+    for (const s of missing) s.distanceKm = Math.round(each * 10) / 10;
+  }
+  for (const v of plan.vehicles) if (v && !v.fuel) v.fuel = defaultFuelProfile(v);
+  return plan;
+}
+
 /** Parses and validates plan JSON; throws an Error with a readable message when invalid. */
 export function parsePlanJson(text: string): Plan {
   let data: unknown;
@@ -43,7 +66,7 @@ export function parsePlanJson(text: string): Plan {
   if (!p.placements || typeof p.placements !== 'object') throw new Error('Plan file is missing "placements".');
   if (!p.settings || !p.meta) throw new Error('Plan file is missing settings or details.');
   if (typeof p.id !== 'string' || typeof p.name !== 'string') throw new Error('Plan file is missing its id or name.');
-  const plan = p as Plan;
+  const plan = upgradePlan(p as Plan);
   const isNum = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n);
   const customerIds = new Set(plan.customers.map((c) => c?.id));
   const stopIds = new Set(plan.stops.map((s) => s?.id));

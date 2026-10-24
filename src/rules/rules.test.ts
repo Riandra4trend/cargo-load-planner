@@ -28,7 +28,7 @@ function planWith(presetId: string, items: Item[], tweak?: (p: Plan) => void): P
     version: 1,
     id: 'test',
     name: 'Test',
-    meta: { date: '2026-01-01', time: '06:00', dock: '', route: '', distanceKm: 0, driver: '', notes: '' },
+    meta: { date: '2026-01-01', time: '06:00', dock: '', route: '', returnKm: 0, driver: '', notes: '' },
     customers: stops.map((s) => ({ id: s.customerId, name: s.name, color: '#000000' })),
     stops,
     lines: items.map((it) => ({ id: it.key, spec: { ...it.spec, name: it.spec.name === 'Pallet' ? it.key : it.spec.name }, quantity: 1, stopId: `s${it.stop ?? 1}`, priority: 'normal' })),

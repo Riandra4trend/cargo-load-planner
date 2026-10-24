@@ -1,6 +1,6 @@
-import { Boxes, ClipboardCheck, Gauge, LayoutGrid, Ruler, Weight } from 'lucide-react';
+import { Boxes, ClipboardCheck, Fuel, Gauge, LayoutGrid, Ruler, Weight } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { bigLengthUnit, formatLength, formatMass, formatNumber, formatPercent, fromMetres, massParts } from '../../domain/units';
+import { bigLengthUnit, formatConsumption, formatLength, formatMass, formatMoney, formatNumber, formatPercent, fromMetres, fuelParts, massParts } from '../../domain/units';
 import { useActiveVehicleEval, useEvaluation, useUnitSystem } from '../../state/hooks';
 import { Card } from '../common/Card';
 import { lowerFirst } from './shellFormat';
@@ -23,7 +23,7 @@ function Kpi({ icon, label, value, unit, sub, tone = 'neutral' }: { icon: ReactN
   );
 }
 
-/** Six live KPIs for the active vehicle (orders across the plan). */
+/** Seven live KPIs for the active vehicle (orders across the plan). */
 export function KpiCards() {
   const sys = useUnitSystem();
   const evaluation = useEvaluation();
@@ -38,9 +38,12 @@ export function KpiCards() {
   const fullest = ve.bays.reduce((best, b) => (b.fill > best.fill ? b : best), ve.bays[0]);
   const lenUnit = bigLengthUnit(sys);
   const unplaced = evaluation.unplaced.length;
+  const fuel = ve.fuel;
+  const [fuelValue, fuelUnit] = fuelParts(fuel.totalL, sys);
+  const currency = evaluation.plan.settings.currency;
 
   return (
-    <section aria-label={`Key figures${multi ? ` for ${v.name}` : ''}`} className="grid shrink-0 grid-cols-2 gap-3 md:grid-cols-3 2xl:grid-cols-6">
+    <section aria-label={`Key figures${multi ? ` for ${v.name}` : ''}`} className="grid shrink-0 grid-cols-2 gap-3 md:grid-cols-4 2xl:grid-cols-7">
       <Kpi icon={<Weight />} label="Total cargo weight" value={cargoValue} unit={cargoUnit} sub={`${formatPercent(ve.fill.weight)} of the ${formatMass(v.payloadKg, sys)} payload`} />
       <Kpi
         icon={<Gauge />}
@@ -76,6 +79,19 @@ export function KpiCards() {
         value={`${evaluation.orders.loaded} of ${evaluation.orders.total}`}
         tone={unplaced > 0 ? 'bad' : evaluation.orders.total > 0 ? 'ok' : 'neutral'}
         sub={unplaced > 0 ? `${unplaced} unit${unplaced === 1 ? '' : 's'} not loaded` : evaluation.orders.total > 0 ? 'every unit is on a vehicle' : 'no orders yet'}
+      />
+      <Kpi
+        icon={<Fuel />}
+        label="Fuel (estimate)"
+        value={fuel.km > 0 ? fuelValue : '-'}
+        unit={fuel.km > 0 ? fuelUnit : undefined}
+        sub={
+          fuel.km > 0
+            ? `${formatConsumption(fuel.avgLPer100km, sys)} · ${formatMoney(fuel.cost, currency)}${multi ? ` · plan ${formatMoney(evaluation.fuel.cost, currency)}` : ''}`
+            : fuel.legs.length
+              ? 'add stop distances'
+              : 'no cargo on this vehicle'
+        }
       />
     </section>
   );

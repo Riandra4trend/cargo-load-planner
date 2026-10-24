@@ -94,6 +94,45 @@ export function formatArea(m2: number, sys: UnitSystem): string {
   return sys === 'metric' ? `${formatNumber(m2, 2)} m²` : `${formatNumber(m2 / M_PER_FT ** 2, 1)} ft²`;
 }
 
+export const KM_PER_MI = 1.609344;
+export const L_PER_US_GAL = 3.785411784;
+/** 100 · L_PER_US_GAL / KM_PER_MI ≈ 235.215: L/100 km × mpg = this constant. */
+const L100_MPG = (100 * L_PER_US_GAL) / KM_PER_MI;
+
+/** Converts L/100 km to US mpg; the same formula converts mpg back to L/100 km. */
+export const lPer100kmToMpg = (value: number): number => L100_MPG / value;
+
+/** "152 km" or "94 mi". */
+export function formatDistance(km: number, sys: UnitSystem, digits = 0): string {
+  return sys === 'metric' ? `${formatNumber(km, digits)} km` : `${formatNumber(km / KM_PER_MI, digits)} mi`;
+}
+
+/** Fuel volume split for KPI cards: metric ["58.4", "L"], imperial ["15.4", "gal"] (US gallons). */
+export function fuelParts(litres: number, sys: UnitSystem, digits = 1): [string, string] {
+  return sys === 'metric' ? [formatNumber(litres, digits), 'L'] : [formatNumber(litres / L_PER_US_GAL, digits), 'gal'];
+}
+
+/** "58.4 L" or "15.4 gal". */
+export function formatFuel(litres: number, sys: UnitSystem, digits = 1): string {
+  return fuelParts(litres, sys, digits).join(' ');
+}
+
+/** Driving consumption: metric "38.4 L/100 km", imperial "6.1 mpg" (US gallons). */
+export function formatConsumption(lPer100km: number, sys: UnitSystem): string {
+  if (!(lPer100km > 0)) return '-';
+  return sys === 'metric' ? `${formatNumber(lPer100km, 1)} L/100 km` : `${formatNumber(lPer100kmToMpg(lPer100km), 1)} mpg`;
+}
+
+/** Money in an ISO 4217 currency ("$61.32", "€1,250"); an unknown code falls back to "XYZ 12.34". */
+export function formatMoney(amount: number, currency: string): string {
+  const digits = Math.abs(amount) >= 1000 ? 0 : 2;
+  try {
+    return new Intl.NumberFormat('en-US', { style: 'currency', currency: currency.trim().toUpperCase(), minimumFractionDigits: digits, maximumFractionDigits: digits }).format(amount);
+  } catch {
+    return `${currency} ${formatNumber(amount, digits)}`;
+  }
+}
+
 /** Parses a user-typed number, accepting "," as decimal separator. Returns NaN when invalid. */
 export function parseNumber(text: string): number {
   const cleaned = text.trim().replace(/\s/g, '').replace(',', '.');

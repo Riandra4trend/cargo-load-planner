@@ -11,6 +11,7 @@ import {
   type Remaining,
   type StagePoint,
 } from '../physics';
+import { estimateFuel, type FuelEstimate } from '../physics/fuel';
 import { checkPlan, type VehiclePhysics } from '../rules';
 
 export interface FillInfo {
@@ -43,6 +44,8 @@ export interface VehicleEval {
   cogHeight: number | null;
   bridge: BridgeCheck[];
   floorPeak: { x: number; kgPerM: number; ids: Id[] };
+  /** Fuel for this vehicle's route with its cargo. */
+  fuel: FuelEstimate;
   violations: Violation[];
 }
 
@@ -61,6 +64,8 @@ export interface PlanEval {
   orders: { loaded: number; total: number };
   /** Weight of all units, placed or not. */
   totalKg: number;
+  /** Fuel over every vehicle in the plan. */
+  fuel: { litres: number; cost: number; co2Kg: number };
 }
 
 const evalCache = new WeakMap<Plan, PlanEval>();
@@ -159,6 +164,7 @@ export function evaluatePlan(plan: Plan): PlanEval {
       cogHeight,
       bridge,
       floorPeak,
+      fuel: estimateFuel(v, plan, placed.map((u) => ({ stopSeq: u.stopSeq, kg: u.spec.weightKg, cold: u.spec.temp !== 'ambient' }))),
       violations: [],
     };
   }
@@ -193,7 +199,14 @@ export function evaluatePlan(plan: Plan): PlanEval {
   for (const u of units) stopsWithCargo.set(u.stopId, (stopsWithCargo.get(u.stopId) ?? true) && !!plan.placements[u.id]);
   const orders = { loaded: [...stopsWithCargo.values()].filter(Boolean).length, total: stopsWithCargo.size };
 
-  const result: PlanEval = { plan, units, unitById, byVehicle, violations, violationsByUnit, unplaced, status, bayOfUnit, orders, totalKg };
+  const fuel = { litres: 0, cost: 0, co2Kg: 0 };
+  for (const ve of Object.values(byVehicle)) {
+    fuel.litres += ve.fuel.totalL;
+    fuel.cost += ve.fuel.cost;
+    fuel.co2Kg += ve.fuel.co2Kg;
+  }
+
+  const result: PlanEval = { plan, units, unitById, byVehicle, violations, violationsByUnit, unplaced, status, bayOfUnit, orders, totalKg, fuel };
   evalCache.set(plan, result);
   return result;
 }

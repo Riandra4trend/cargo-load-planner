@@ -1,26 +1,44 @@
-import { ArrowDown, ArrowUp, Check, GripVertical, Pencil, Plus, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowUp, Check, CornerDownLeft, GripVertical, Pencil, Plus, Trash2 } from 'lucide-react';
 import { useMemo, useState, type FormEvent } from 'react';
 import { STOP_PALETTE } from '../../domain/colors';
-import { formatMass } from '../../domain/units';
-import type { Customer, Stop } from '../../domain/types';
+import { formatDistance, formatMass, KM_PER_MI } from '../../domain/units';
+import type { Customer, Stop, UnitSystem } from '../../domain/types';
 import { useEvaluation, useUnitSystem } from '../../state/hooks';
 import { useStore } from '../../state/store';
 import { Button, IconButton } from '../common/Button';
 import { ColorDot } from '../common/Chip';
-import { inputClass } from '../common/fields';
+import { inputClass, NumberInput } from '../common/fields';
 
 const DRAG_TYPE = 'application/x-stop-id';
 
+/** Compact distance input in km (metric) or miles (imperial); `km` is always kilometres. */
+function DistanceInput({ km, onChange, sys, label }: { km: number; onChange: (km: number) => void; sys: UnitSystem; label: string }) {
+  return (
+    <NumberInput
+      aria-label={label}
+      value={sys === 'metric' ? km : km / KM_PER_MI}
+      onChange={(n) => onChange(sys === 'metric' ? n : n * KM_PER_MI)}
+      min={0}
+      digits={1}
+      suffix={sys === 'metric' ? 'km' : 'mi'}
+      className="!h-8 text-xs"
+    />
+  );
+}
+
 function StopEditor({ stop, customer, onDone }: { stop: Stop; customer: Customer | undefined; onDone: () => void }) {
   const commit = useStore((s) => s.commit);
+  const sys = useUnitSystem();
   const [name, setName] = useState(stop.name);
   const [customerName, setCustomerName] = useState(customer?.name ?? '');
   const [color, setColor] = useState(customer?.color ?? STOP_PALETTE[0]);
+  const [km, setKm] = useState(stop.distanceKm ?? 0);
   const save = (e: FormEvent) => {
     e.preventDefault();
     commit('Edit stop', (d) => {
       const s = d.stops.find((x) => x.id === stop.id);
       if (s && name.trim()) s.name = name.trim();
+      if (s) s.distanceKm = km;
       const c = d.customers.find((x) => x.id === stop.customerId);
       if (c) {
         if (customerName.trim()) c.name = customerName.trim();
@@ -33,6 +51,10 @@ function StopEditor({ stop, customer, onDone }: { stop: Stop; customer: Customer
     <form onSubmit={save} className="space-y-1.5 rounded-xl border border-line bg-canvas/70 p-2" onKeyDown={(e) => e.key === 'Escape' && (e.stopPropagation(), onDone())}>
       <input aria-label="Stop name" className={`${inputClass} !h-8 text-xs`} value={name} onChange={(e) => setName(e.target.value)} autoFocus />
       <input aria-label="Customer name" className={`${inputClass} !h-8 text-xs`} value={customerName} onChange={(e) => setCustomerName(e.target.value)} placeholder="Customer" />
+      <label className="flex items-center gap-2 text-[11px] text-muted">
+        <span className="shrink-0">From previous stop</span>
+        <DistanceInput km={km} onChange={setKm} sys={sys} label="Distance from the previous stop" />
+      </label>
       <div role="radiogroup" aria-label="Stop colour" className="flex flex-wrap items-center gap-1">
         {STOP_PALETTE.map((c) => (
           <button
@@ -64,8 +86,10 @@ function StopEditor({ stop, customer, onDone }: { stop: Stop; customer: Customer
 
 function AddStopForm({ onDone }: { onDone: () => void }) {
   const addStop = useStore((s) => s.addStop);
+  const sys = useUnitSystem();
   const [name, setName] = useState('');
   const [customerName, setCustomerName] = useState('');
+  const [km, setKm] = useState(0);
   return (
     <form
       className="mt-1 space-y-1.5 rounded-xl border border-line bg-canvas/70 p-2"
@@ -73,12 +97,16 @@ function AddStopForm({ onDone }: { onDone: () => void }) {
       onSubmit={(e) => {
         e.preventDefault();
         if (!name.trim()) return;
-        addStop({ name: name.trim(), customerName: customerName.trim() || name.trim() });
+        addStop({ name: name.trim(), customerName: customerName.trim() || name.trim(), distanceKm: km });
         onDone();
       }}
     >
       <input aria-label="New stop name" className={`${inputClass} !h-8 text-xs`} value={name} onChange={(e) => setName(e.target.value)} placeholder="Stop name or address" autoFocus />
       <input aria-label="Customer" className={`${inputClass} !h-8 text-xs`} value={customerName} onChange={(e) => setCustomerName(e.target.value)} placeholder="Customer (existing or new)" />
+      <label className="flex items-center gap-2 text-[11px] text-muted">
+        <span className="shrink-0">From previous stop</span>
+        <DistanceInput km={km} onChange={setKm} sys={sys} label="Distance from the previous stop" />
+      </label>
       <div className="flex justify-end gap-1">
         <Button size="sm" variant="ghost" onClick={onDone}>
           Cancel
@@ -88,6 +116,50 @@ function AddStopForm({ onDone }: { onDone: () => void }) {
         </Button>
       </div>
     </form>
+  );
+}
+
+/** The empty drive back to the depot after the last stop (counted in the fuel estimate). */
+function ReturnLeg() {
+  const sys = useUnitSystem();
+  const returnKm = useStore((s) => s.plan.meta.returnKm);
+  const updateMeta = useStore((s) => s.updateMeta);
+  const [editing, setEditing] = useState(false);
+  const [km, setKm] = useState(returnKm);
+  if (editing)
+    return (
+      <form
+        className="mt-0.5 flex items-center gap-1.5 rounded-xl border border-line bg-canvas/70 p-2"
+        onKeyDown={(e) => e.key === 'Escape' && (e.stopPropagation(), setEditing(false))}
+        onSubmit={(e) => {
+          e.preventDefault();
+          updateMeta({ returnKm: km });
+          setEditing(false);
+        }}
+      >
+        <span className="shrink-0 text-[11px] text-muted">Back to depot</span>
+        <DistanceInput km={km} onChange={setKm} sys={sys} label="Return distance to the depot" />
+        <IconButton label="Save return distance" size="sm" variant="primary" type="submit" className="!h-8 !w-8 shrink-0">
+          <Check className="h-3.5 w-3.5" />
+        </IconButton>
+      </form>
+    );
+  return (
+    <div className="group flex items-center gap-1.5 rounded-lg px-1 py-1.5 text-muted hover:bg-black/[0.03]">
+      <CornerDownLeft className="h-3.5 w-3.5 shrink-0" aria-hidden />
+      <span className="flex-1 text-[11px]">Back to depot{returnKm > 0 ? ` · ${formatDistance(returnKm, sys)}` : ' · not counted'}</span>
+      <IconButton
+        label="Edit return distance"
+        size="sm"
+        className="!h-6 !w-6 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100"
+        onClick={() => {
+          setKm(returnKm);
+          setEditing(true);
+        }}
+      >
+        <Pencil className="h-3 w-3" />
+      </IconButton>
+    </div>
   );
 }
 
@@ -183,6 +255,7 @@ export function StopList() {
                 </span>
                 <span className="num block truncate text-[11px] text-muted" title={stop.name}>
                   {t ? `${t.placed === t.units ? t.units : `${t.placed}/${t.units}`} units · ${formatMass(t.kg, sys)}` : 'no items'}
+                  {(stop.distanceKm ?? 0) > 0 && ` · ${formatDistance(stop.distanceKm ?? 0, sys)}`}
                 </span>
               </span>
               <span className="absolute right-1 top-1/2 flex -translate-y-1/2 rounded-md bg-card opacity-0 shadow-sm ring-1 ring-line transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
@@ -210,6 +283,7 @@ export function StopList() {
           );
         })}
       </ol>
+      {stops.length > 0 && <ReturnLeg />}
       {adding ? (
         <AddStopForm onDone={() => setAdding(false)} />
       ) : (

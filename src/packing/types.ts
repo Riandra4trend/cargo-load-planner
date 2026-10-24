@@ -10,6 +10,11 @@ export interface OptimiseRequest {
   keepExisting: boolean;
   seed: number;
   timeBudgetMs: number;
+  /**
+   * Stop after this many layout evaluations. With a cap (and a time budget that is not reached) the
+   * annealing schedule follows the iteration count, so the result depends only on the plan and seed.
+   */
+  maxIterations?: number;
 }
 
 export interface OptimiseResult {

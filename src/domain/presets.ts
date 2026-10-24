@@ -1,6 +1,6 @@
 import { uid } from './ids';
 import { lbToKg } from './units';
-import type { AxleGroup, TempZone, Vehicle } from './types';
+import type { AxleGroup, FuelProfile, TempZone, Vehicle } from './types';
 
 /**
  * Vehicle presets. All values are approximate, typical figures for illustration and fully
@@ -63,6 +63,7 @@ const PRESETS: Record<string, () => PresetBody> = {
     bayLength: 0.8,
     bridgeFormula: false,
     lateralMaxImbalance: 0.1,
+    fuel: { emptyLPer100km: 8.5, fullLPer100km: 10.5, idleLPerHour: 0.8, reeferLPerHour: 0, tankL: 75 },
     statics: {
       type: 'rigid',
       front: { id: 'front', label: 'Front axle', x: -1.0, count: 1, spread: 0, tareKg: 1250, maxKg: 1800, minShare: 0.2, steer: true },
@@ -90,6 +91,7 @@ const PRESETS: Record<string, () => PresetBody> = {
     bayLength: 1.2,
     bridgeFormula: false,
     lateralMaxImbalance: 0.1,
+    fuel: { emptyLPer100km: 19, fullLPer100km: 25, idleLPerHour: 1.8, reeferLPerHour: 0, tankL: 200 },
     statics: {
       type: 'rigid',
       front: { id: 'front', label: 'Front axle', x: -1.3, count: 1, spread: 0, tareKg: 4800, maxKg: 7500, minShare: 0.2, steer: true },
@@ -117,6 +119,7 @@ const PRESETS: Record<string, () => PresetBody> = {
     bayLength: 1.2,
     bridgeFormula: false,
     lateralMaxImbalance: 0.1,
+    fuel: { emptyLPer100km: 23, fullLPer100km: 32, idleLPerHour: 2.5, reeferLPerHour: 0, tankL: 600 },
     statics: {
       type: 'artic',
       kingpinX: 1.55,
@@ -149,6 +152,7 @@ const PRESETS: Record<string, () => PresetBody> = {
     bayLength: 1.22,
     bridgeFormula: true,
     lateralMaxImbalance: 0.1,
+    fuel: { emptyLPer100km: 27, fullLPer100km: 37, idleLPerHour: 3.0, reeferLPerHour: 0, tankL: 900 },
     statics: {
       type: 'artic',
       kingpinX: 0.9,
@@ -184,6 +188,7 @@ const PRESETS: Record<string, () => PresetBody> = {
     bayLength: 1.22,
     bridgeFormula: true,
     lateralMaxImbalance: 0.1,
+    fuel: { emptyLPer100km: 28, fullLPer100km: 38, idleLPerHour: 3.0, reeferLPerHour: 3.4, tankL: 900 },
     statics: {
       type: 'artic',
       kingpinX: 0.9,
@@ -215,6 +220,7 @@ const PRESETS: Record<string, () => PresetBody> = {
     bayLength: 1.2,
     bridgeFormula: true,
     lateralMaxImbalance: 0.1,
+    fuel: { emptyLPer100km: 27, fullLPer100km: 37, idleLPerHour: 3.0, reeferLPerHour: 0, tankL: 900 },
     statics: {
       type: 'artic',
       kingpinX: 0.9,
@@ -245,6 +251,7 @@ const PRESETS: Record<string, () => PresetBody> = {
     bayLength: 1.22,
     bridgeFormula: true,
     lateralMaxImbalance: 0.1,
+    fuel: { emptyLPer100km: 26, fullLPer100km: 37, idleLPerHour: 3.0, reeferLPerHour: 0, tankL: 900 },
     statics: {
       type: 'artic',
       kingpinX: 0.9,
@@ -276,6 +283,17 @@ export function createVehicle(presetId: string, id: string = uid('veh')): Vehicl
 /** Blank custom vehicle (rigid, editable in the vehicle editor). */
 export function createCustomVehicle(id: string = uid('veh')): Vehicle {
   return { ...createVehicle('eu-rigid-18', id), presetId: 'custom', name: 'Custom vehicle', region: 'custom' };
+}
+
+/**
+ * Fuel profile for a vehicle saved before fuel profiles existed: its preset's profile, otherwise a
+ * typical profile for its kind (plus a reefer unit when temperature controlled).
+ */
+export function defaultFuelProfile(v: Pick<Vehicle, 'presetId' | 'kind' | 'tempControlled'>): FuelProfile {
+  const preset = PRESETS[v.presetId];
+  if (preset) return { ...preset().fuel };
+  const base = v.kind === 'van' ? PRESETS['eu-van-35']() : v.kind === 'rigid' ? PRESETS['eu-rigid-18']() : PRESETS['us-dry-van-53']();
+  return { ...base.fuel, reeferLPerHour: v.tempControlled ? (v.kind === 'van' ? 1.2 : 3.4) : 0 };
 }
 
 /** Vehicle tare (empty) weight, kg. */

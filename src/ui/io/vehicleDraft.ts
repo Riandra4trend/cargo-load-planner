@@ -25,7 +25,14 @@ export function withStaticsType(v: Vehicle, type: 'rigid' | 'artic'): Vehicle {
     };
     if (ts.slider) statics.slider = { ...ts.slider, minX: ts.slider.minX + shift };
     else delete statics.slider;
-    return { ...v, kind: v.kind === 'van' || v.kind === 'rigid' ? 'semi' : v.kind, grossLimitKg: template.grossLimitKg, payloadKg: template.payloadKg, statics };
+    return {
+      ...v,
+      kind: v.kind === 'van' || v.kind === 'rigid' ? 'semi' : v.kind,
+      grossLimitKg: template.grossLimitKg,
+      payloadKg: template.payloadKg,
+      fuel: { ...template.fuel, reeferLPerHour: v.fuel.reeferLPerHour },
+      statics,
+    };
   }
   const template = createVehicle(L < 5 ? 'eu-van-35' : 'eu-rigid-18');
   const ts = template.statics as RigidStatics;
@@ -34,7 +41,14 @@ export function withStaticsType(v: Vehicle, type: 'rigid' | 'artic'): Vehicle {
     front: { ...ts.front },
     rear: { ...ts.rear, x: round3((L * ts.rear.x) / template.cargo.l) },
   };
-  return { ...v, kind: v.kind === 'semi' || v.kind === 'container' ? 'rigid' : v.kind, grossLimitKg: template.grossLimitKg, payloadKg: template.payloadKg, statics };
+  return {
+    ...v,
+    kind: v.kind === 'semi' || v.kind === 'container' ? 'rigid' : v.kind,
+    grossLimitKg: template.grossLimitKg,
+    payloadKg: template.payloadKg,
+    fuel: { ...template.fuel, reeferLPerHour: v.fuel.reeferLPerHour },
+    statics,
+  };
 }
 
 // --- temperature zones --------------------------------------------------------
@@ -119,6 +133,13 @@ export function validateVehicle(v: Vehicle, sys: UnitSystem): VehicleIssue[] {
   if (v.deckHeight < 0) err('Deck height must not be negative');
   if (v.airflowTopGap < 0 || v.airflowTopGap >= v.cargo.h) err('Airflow gap must be between 0 and the cargo height');
   if (!(v.lateralMaxImbalance > 0 && v.lateralMaxImbalance <= 1)) err('Lateral imbalance limit must be between 0 and 100 %');
+
+  const f = v.fuel;
+  if (!(f.emptyLPer100km > 0 && f.fullLPer100km > 0)) err('Fuel consumption must be greater than 0');
+  else if (f.fullLPer100km < f.emptyLPer100km) warn('Consumption at full payload is lower than empty');
+  if (f.idleLPerHour < 0 || f.reeferLPerHour < 0) err('Idle and reefer fuel use must not be negative');
+  if (!(f.tankL > 0)) err('Fuel tank capacity must be greater than 0');
+  if (v.tempControlled && f.reeferLPerHour === 0) warn('Temperature controlled, but the reefer unit uses no fuel');
 
   const tare = vehicleTareKg(v);
   if (tare >= v.grossLimitKg) err(`Tare ${formatMass(tare, sys)} is not below the gross limit ${formatMass(v.grossLimitKg, sys)}`);

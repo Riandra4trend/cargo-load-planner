@@ -3,8 +3,8 @@ import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import { TEMP_LABELS } from '../../domain/colors';
 import { uid } from '../../domain/ids';
 import { createCustomVehicle, createVehicle, sliderPositions, VEHICLE_PRESETS, vehicleTareKg } from '../../domain/presets';
-import type { AccessSide, ArticStatics, AxleGroup, Id, Region, TempClass, UnitSystem, Vehicle, VehicleKind } from '../../domain/types';
-import { bigLengthUnit, formatLength, formatMass, kgToLb, lbToKg, M_PER_FT, weightUnit } from '../../domain/units';
+import type { AccessSide, ArticStatics, AxleGroup, FuelProfile, Id, Region, TempClass, UnitSystem, Vehicle, VehicleKind } from '../../domain/types';
+import { bigLengthUnit, formatLength, formatMass, kgToLb, L_PER_US_GAL, lbToKg, lPer100kmToMpg, M_PER_FT, weightUnit } from '../../domain/units';
 import { curvePeak, loadDistributionCurve } from '../../physics';
 import { useUnitSystem } from '../../state/hooks';
 import { useStore } from '../../state/store';
@@ -49,6 +49,31 @@ function Section({ title, children, right }: { title: string; children: ReactNod
 }
 
 const grid = 'grid grid-cols-2 gap-3 sm:grid-cols-3';
+
+/** Fuel volume (or volume per hour): litres (metric) or US gallons (imperial). */
+function FuelVolumeInput({ litres, onChange, sys, perHour, label, disabled }: { litres: number; onChange: (litres: number) => void; sys: UnitSystem; perHour?: boolean; label: string; disabled?: boolean }) {
+  const unit = sys === 'metric' ? 'L' : 'gal';
+  return (
+    <NumberInput
+      value={sys === 'metric' ? litres : litres / L_PER_US_GAL}
+      onChange={(n) => onChange(sys === 'metric' ? n : n * L_PER_US_GAL)}
+      digits={perHour ? 2 : 0}
+      min={0}
+      suffix={perHour ? `${unit}/h` : unit}
+      aria-label={label}
+      disabled={disabled}
+    />
+  );
+}
+
+/** Driving consumption: L/100 km (metric) or US mpg (imperial); the value is always L/100 km. */
+function ConsumptionInput({ lPer100km, onChange, sys, label }: { lPer100km: number; onChange: (lPer100km: number) => void; sys: UnitSystem; label: string }) {
+  return sys === 'metric' ? (
+    <NumberInput value={lPer100km} onChange={onChange} digits={1} min={0.1} aria-label={label} />
+  ) : (
+    <NumberInput value={lPer100kmToMpg(lPer100km)} onChange={(mpg) => onChange(lPer100kmToMpg(mpg))} digits={1} min={0.1} aria-label={label} />
+  );
+}
 
 /** Weight-per-length input: kg/m (metric) or lb/ft (imperial). */
 function FloorRatingInput({ kgPerM, onChange, sys }: { kgPerM: number; onChange: (kgPerM: number) => void; sys: UnitSystem }) {
@@ -160,7 +185,13 @@ export function VehicleEditor({ request }: { request: { mode: 'create' | 'edit';
 
   const setCargoLength = (l: number) => set({ cargo: { ...v.cargo, l }, zones: scaleZones(v.zones, v.cargo.l, l) });
   const setTempControlled = (on: boolean) =>
-    set(on ? { tempControlled: true } : { tempControlled: false, multiTemp: false, airflowTopGap: 0, zones: [{ id: uid('zone'), temp: 'ambient', fromX: 0, toX: v.cargo.l }] });
+    set(
+      on
+        ? { tempControlled: true, fuel: v.fuel.reeferLPerHour > 0 ? v.fuel : { ...v.fuel, reeferLPerHour: s.type === 'artic' ? 3.4 : 1.2 } }
+        : { tempControlled: false, multiTemp: false, airflowTopGap: 0, zones: [{ id: uid('zone'), temp: 'ambient', fromX: 0, toX: v.cargo.l }], fuel: { ...v.fuel, reeferLPerHour: 0 } },
+    );
+  const setFuel = (patch: Partial<FuelProfile>) => set({ fuel: { ...v.fuel, ...patch } });
+  const consumptionUnit = sys === 'metric' ? 'L/100 km' : 'mpg';
   const toggleAccess = (side: AccessSide) => set({ access: v.access.includes(side) ? v.access.filter((a) => a !== side) : [...v.access, side] });
 
   const choosePreset = (id: string) => {
@@ -368,6 +399,26 @@ export function VehicleEditor({ request }: { request: { mode: 'create' | 'edit';
               <div className="flex items-end pb-1">
                 <Toggle checked={v.bridgeFormula} onChange={(bridgeFormula) => set({ bridgeFormula })} label="US Bridge Formula" />
               </div>
+            </div>
+          </Section>
+
+          <Section title="Fuel" right={<span className="text-[11px] text-muted">Consumption is linear in the cargo weight between empty and full</span>}>
+            <div className={grid}>
+              <Field label={`Empty (${consumptionUnit})`}>
+                <ConsumptionInput lPer100km={v.fuel.emptyLPer100km} onChange={(emptyLPer100km) => setFuel({ emptyLPer100km })} sys={sys} label="Consumption empty" />
+              </Field>
+              <Field label={`At full payload (${consumptionUnit})`}>
+                <ConsumptionInput lPer100km={v.fuel.fullLPer100km} onChange={(fullLPer100km) => setFuel({ fullLPer100km })} sys={sys} label="Consumption at full payload" />
+              </Field>
+              <Field label="Fuel tank">
+                <FuelVolumeInput litres={v.fuel.tankL} onChange={(tankL) => setFuel({ tankL })} sys={sys} label="Fuel tank capacity" />
+              </Field>
+              <Field label="Engine idling" hint="While stopped at a delivery">
+                <FuelVolumeInput litres={v.fuel.idleLPerHour} onChange={(idleLPerHour) => setFuel({ idleLPerHour })} sys={sys} perHour label="Idle fuel use" />
+              </Field>
+              <Field label="Reefer unit" hint={v.tempControlled ? 'While chilled or frozen cargo is aboard' : 'Turn on temperature control first'}>
+                <FuelVolumeInput litres={v.fuel.reeferLPerHour} onChange={(reeferLPerHour) => setFuel({ reeferLPerHour })} sys={sys} perHour label="Reefer fuel use" disabled={!v.tempControlled} />
+              </Field>
             </div>
           </Section>
 

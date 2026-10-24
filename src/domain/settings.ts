@@ -83,6 +83,12 @@ export function defaultSettings(): PlanSettings {
     },
     optimiserTimeMs: 3000,
     seed: 42,
+    fuelPricePerL: 1.05,
+    currency: 'USD',
+    co2KgPerL: 2.68,
+    avgSpeedKmh: 55,
+    stopMinutes: 25,
+    idleMinutesPerStop: 10,
   };
 }
 

@@ -15,7 +15,7 @@ export function createEmptyPlan(presetId = 'eu-rigid-18'): Plan {
   const vehicle = createVehicle(presetId);
   vehicle.name = `Truck 1 · ${vehicle.name}`;
   const customer: Customer = { id: uid('cust'), name: 'Customer 1', color: stopColor(1) };
-  const stop: Stop = { id: uid('stop'), name: 'Stop 1', customerId: customer.id, sequence: 1 };
+  const stop: Stop = { id: uid('stop'), name: 'Stop 1', customerId: customer.id, sequence: 1, distanceKm: 0 };
   return {
     version: 1,
     id: uid('plan'),
@@ -25,7 +25,7 @@ export function createEmptyPlan(presetId = 'eu-rigid-18'): Plan {
       time: '08:00',
       dock: '',
       route: '',
-      distanceKm: 0,
+      returnKm: 0,
       driver: '',
       notes: '',
     },

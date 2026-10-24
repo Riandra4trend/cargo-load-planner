@@ -144,7 +144,8 @@ export interface StoreState {
   duplicateLine: (id: Id) => Id | null;
 
   // customers / stops ---------------------------------------------------
-  addStop: (input: { name: string; customerName: string; color?: string }) => Id;
+  /** Adds a stop at the end of the route; `distanceKm` = driving distance from the previous stop. */
+  addStop: (input: { name: string; customerName: string; color?: string; distanceKm?: number }) => Id;
   updateStop: (id: Id, patch: Partial<Omit<Stop, 'id'>>) => void;
   updateCustomer: (id: Id, patch: Partial<Omit<Customer, 'id'>>) => void;
   /** New delivery order; sequences become 1..n in this order. */
@@ -332,7 +333,7 @@ export const useStore = create<StoreState>()((set, get) => {
       return get().addLine({ ...rest, spec: { ...rest.spec, name: `${rest.spec.name} (copy)` } });
     },
 
-    addStop: ({ name, customerName, color }) => {
+    addStop: ({ name, customerName, color, distanceKm = 0 }) => {
       const stopId = uid('stop');
       commit('Add stop', (d) => {
         const sequence = d.stops.length + 1;
@@ -341,7 +342,7 @@ export const useStore = create<StoreState>()((set, get) => {
           customer = { id: uid('cust'), name: customerName.trim() || name, color: color ?? stopColor(sequence) };
           d.customers.push(customer);
         }
-        d.stops.push({ id: stopId, name, customerId: customer.id, sequence });
+        d.stops.push({ id: stopId, name, customerId: customer.id, sequence, distanceKm });
       });
       return stopId;
     },

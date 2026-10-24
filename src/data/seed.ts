@@ -222,7 +222,7 @@ export function createSeedPlan(): Plan {
       time: '06:30',
       dock: 'Dock 4',
       route: 'R-14',
-      distanceKm: SEED_STOPS.reduce((s, x) => s + x.distanceKm, 0),
+      returnKm: 45,
       driver: '',
       notes: '',
     },

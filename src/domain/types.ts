@@ -124,6 +124,7 @@ export interface Stop {
   /** 1-based delivery order; kept contiguous (1..n) by the store. */
   sequence: number;
   address?: string;
+  /** Driving distance from the previous stop (from the depot for stop 1), km. Missing = 0. */
   distanceKm?: number;
 }
 
@@ -243,7 +244,25 @@ export interface Vehicle {
   bridgeFormula: boolean;
   /** Maximum left/right cargo imbalance as a fraction (0.1 = 10 %). */
   lateralMaxImbalance: number;
+  fuel: FuelProfile;
   statics: RigidStatics | ArticStatics;
+}
+
+/**
+ * Diesel use of a vehicle. Driving consumption is linear in the cargo weight between the empty and the
+ * full (rated payload) figures and extrapolates above the payload.
+ */
+export interface FuelProfile {
+  /** Driving consumption with no cargo, litres per 100 km. */
+  emptyLPer100km: number;
+  /** Driving consumption at the rated payload, litres per 100 km. */
+  fullLPer100km: number;
+  /** Engine idling while stopped at a delivery, litres per hour. */
+  idleLPerHour: number;
+  /** Refrigeration unit while chilled or frozen cargo is aboard, litres per hour (0 = no reefer). */
+  reeferLPerHour: number;
+  /** Fuel tank capacity, litres. */
+  tankL: number;
 }
 
 export type UnitSystem = 'metric' | 'imperial';
@@ -272,6 +291,18 @@ export interface PlanSettings {
   tempRanges: Record<TempClass, { min: number; max: number }>;
   optimiserTimeMs: number;
   seed: number;
+  /** Diesel price per litre in `currency`. */
+  fuelPricePerL: number;
+  /** ISO 4217 currency code for fuel cost, e.g. "USD", "EUR", "IDR". */
+  currency: string;
+  /** Tank-to-wheel CO2 per litre of diesel, kg. */
+  co2KgPerL: number;
+  /** Average driving speed between stops, km/h (drives reefer running time). */
+  avgSpeedKmh: number;
+  /** Time spent at each delivery stop, minutes (the reefer keeps running). */
+  stopMinutes: number;
+  /** Engine idling at each delivery stop, minutes. */
+  idleMinutesPerStop: number;
 }
 
 export interface PlanMeta {
@@ -281,7 +312,8 @@ export interface PlanMeta {
   time: string;
   dock: string;
   route: string;
-  distanceKm: number;
+  /** Empty drive from the last stop back to the depot, km (0 = not counted). */
+  returnKm: number;
   driver: string;
   notes: string;
 }

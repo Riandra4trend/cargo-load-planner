@@ -26,6 +26,12 @@ Plan truck, trailer and container loads in 3D, in the browser. Define your cargo
 - Hard rules: inside the cargo space, through the door, no overlap, ceiling and reefer airflow clearance, support ≥ 75 %, stacking limits, fragile, rotation, temperature zones, hazmat segregation (illustrative matrix) and food separation.
 - Soft rules: axle/gross/payload limits at every stage, last-stop-first loading ("Batteries (stop 2) blocks stop 1"), balance, floor load. Fix suggestions apply in one click (e.g. "Slide trailer tandem 25 holes forward").
 
+**Fuel and emissions**
+- Diesel estimate per vehicle and per leg. Each leg burns at the consumption for the cargo still aboard, so the trucks use less as deliveries come off. Consumption is linear between the vehicle's empty and full-payload figures (L/100 km, or mpg in imperial).
+- Adds the reefer unit while chilled or frozen cargo is aboard (driving and at stops), engine idling at each stop, and an empty return to the depot.
+- Shows cost in any currency, CO₂, time on the road, tank use and freight efficiency (L per 100 t·km or ton-mi/gal) in the right panel, as a KPI card and in the report.
+- Leg distances are entered per stop in the sidebar. Fuel profiles are edited in the vehicle editor; price, CO₂ factor, average speed and stop times in Settings.
+
 **Optimiser**
 - 3D extreme-point packing plus seeded local search in a Web Worker (3 s budget, progress, cancel). It sizes the multi-temp bulkheads, picks the slider hole and respects pinned units.
 - Shows a before/after diff with Accept / Revert. Unplaced units get reasons, and "Add a second vehicle" picks a vehicle that can carry the leftovers.
@@ -72,12 +78,14 @@ Every axle group's load is affine in the cargo: `load_i = tare_i + Σ kg_j · sh
 
 The tests pin these with hand-computed cases. For example, 1000 kg at x = 5 m on a trailer with the kingpin at 1 m and the tandem at 11 m gives 600 kg on the kingpin and 400 kg on the tandem, which becomes 47.37 kg steer / 552.63 kg drive.
 
+Fuel per leg = distance × (empty + (full − empty) × cargo aboard / rated payload) / 100. The reefer runs for the driving and stop time while chilled or frozen cargo is aboard; idling adds the idle rate × idle minutes at every stop. Cost and CO₂ multiply the total litres by the price and the CO₂ factor (default 2.68 kg/L, fossil diesel).
+
 ## Project structure
 
 ```
 src/
   domain/    types (shared contract), units, geometry, presets, settings, colours
-  physics/   axle statics, stages, load distribution, capacity, Bridge Formula, slider
+  physics/   axle statics, stages, load distribution, capacity, Bridge Formula, slider, fuel estimate
   rules/     hard/soft checks, LIFO, support/stacking, hazmat, fix suggestions, validateMove
   packing/   construction + local search optimiser, Web Worker, findPlacementFor, proposeVehicles
   state/     Zustand store (undo/redo), plan evaluation, hooks
@@ -92,5 +100,6 @@ src/
 
 - Vehicle presets, tare axle loads and limits are typical illustrative values, not manufacturer data. Edit them to match your registration papers.
 - The hazmat compatibility matrix is illustrative, loosely based on ADR 7.5.2 / 49 CFR 177.848. It is not a legal reference.
-- Cylinders are packed by their bounding boxes. The optimiser is heuristic: good, not provably optimal. With a fixed seed it is deterministic for a given iteration count, but the iteration count depends on machine speed.
+- Cylinders are packed by their bounding boxes. The optimiser is heuristic: good, not provably optimal. With a fixed seed and an iteration cap (`maxIterations`) its result is reproducible; with only a time budget it depends on machine speed.
+- Fuel figures are typical values and the model ignores terrain, speed profile, traffic and weather; it is a planning estimate, not a fuel card.
 - Not certified for legal compliance. Load securing (lashing) is out of scope.

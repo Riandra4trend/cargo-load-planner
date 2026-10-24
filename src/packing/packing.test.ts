@@ -16,7 +16,7 @@ function emptyPlan(presetIds: string[], lines: CargoLine[], stopCount = 3): Plan
     version: 1,
     id: 'test',
     name: 'Test',
-    meta: { date: '2026-01-01', time: '06:00', dock: '', route: '', distanceKm: 0, driver: '', notes: '' },
+    meta: { date: '2026-01-01', time: '06:00', dock: '', route: '', returnKm: 0, driver: '', notes: '' },
     customers: stops.map((s) => ({ id: s.customerId, name: s.name, color: '#000000' })),
     stops,
     lines,
@@ -29,9 +29,17 @@ function emptyPlan(presetIds: string[], lines: CargoLine[], stopCount = 3): Plan
 const line = (id: string, spec: ItemSpec, quantity = 1, stop = 1): CargoLine => ({ id, spec, quantity, stopId: `s${stop}`, priority: 'normal' });
 const pallet = (partial: Partial<ItemSpec> = {}): ItemSpec => makeSpec({ name: 'Pallet', dims: { l: 1.2, w: 0.8, h: 1.2 }, weightKg: 300, ...partial });
 
-function run(plan: Plan, opts: { keepExisting?: boolean; seed?: number; timeBudgetMs?: number; vehicleIds?: string[]; unitIds?: string[] } = {}) {
+function run(plan: Plan, opts: { keepExisting?: boolean; seed?: number; timeBudgetMs?: number; maxIterations?: number; vehicleIds?: string[]; unitIds?: string[] } = {}) {
   const vehicleIds = opts.vehicleIds ?? plan.vehicles.map((v) => v.id);
-  const result = optimise({ plan, vehicleIds, unitIds: opts.unitIds, keepExisting: opts.keepExisting ?? false, seed: opts.seed ?? 1, timeBudgetMs: opts.timeBudgetMs ?? 50 });
+  const result = optimise({
+    plan,
+    vehicleIds,
+    unitIds: opts.unitIds,
+    keepExisting: opts.keepExisting ?? false,
+    seed: opts.seed ?? 1,
+    timeBudgetMs: opts.timeBudgetMs ?? 50,
+    maxIterations: opts.maxIterations,
+  });
   const applied = applyOptimiseResult(plan, { ...result, vehicleIds });
   return { result, applied, ev: evaluatePlan(applied) };
 }
@@ -78,12 +86,13 @@ describe('seed scenario', () => {
   it('urgent order: stable re-optimise keeps most placements', () => {
     const seed = createSeedPlan();
     const vehicleIds = seed.vehicles.map((v) => v.id);
-    const base = run(seed, { timeBudgetMs: 500, seed: 42 }).applied;
+    // Iteration caps (with a budget never reached) keep this independent of machine speed.
+    const base = run(seed, { maxIterations: 150, timeBudgetMs: 60_000, seed: 42 }).applied;
     const urgent: Plan = {
       ...base,
       lines: [...base.lines, { ...line('line-urgent', pallet({ name: 'Urgent spares', weightKg: 400 }), 2, 2), priority: 'urgent' }],
     };
-    const { result, ev } = run(urgent, { keepExisting: true, timeBudgetMs: 800, seed: 42, vehicleIds });
+    const { result, ev } = run(urgent, { keepExisting: true, maxIterations: 200, timeBudgetMs: 60_000, seed: 42, vehicleIds });
     expect(result.unplaced).toEqual([]);
     expect(ev.violations.filter((v) => v.hard)).toEqual([]);
     expect(result.moved).toBeLessThanOrEqual(8);
@@ -99,6 +108,16 @@ describe('seed scenario', () => {
     // A clean first try returns immediately; otherwise the full search still pays for every move.
     for (let i = 0; i < 4; i++) expect(result.placements[`a#${i}`]).toEqual(first.applied.placements[`a#${i}`]);
     expect(result.placements['b#0']).toBeDefined();
+  });
+
+  it('an iteration cap makes the result reproducible for the same plan and seed', () => {
+    const opts = { maxIterations: 80, timeBudgetMs: 60_000, seed: 7 };
+    const a = run(createSeedPlan(), opts).result;
+    const b = run(createSeedPlan(), opts).result;
+    expect(a.iterations).toBe(80);
+    expect(b.placements).toEqual(a.placements);
+    expect(b.sliders).toEqual(a.sliders);
+    expect(b.zones).toEqual(a.zones);
   });
 });
 
@@ -219,9 +238,9 @@ describe('property: random loads never break a hard rule', () => {
 
 describe('findPlacementFor', () => {
   it('finds a legal spot without moving other units', () => {
+    // The seed layout is fixed and leaves a pallet-sized gap by the rear doors.
     const seed = createSeedPlan();
-    const base = run(seed, { timeBudgetMs: 300, seed: 42 }).applied;
-    const plan: Plan = { ...base, lines: [...base.lines, { ...line('extra', pallet({ name: 'Extra' })), stopId: 'stop-1' }] };
+    const plan: Plan = { ...seed, lines: [...seed.lines, { ...line('extra', pallet({ name: 'Extra' })), stopId: 'stop-1' }] };
     const p = findPlacementFor(plan, 'extra#0', 'veh-1');
     expect(p).not.toBeNull();
     expect(validateMove(plan, p!).ok).toBe(true);

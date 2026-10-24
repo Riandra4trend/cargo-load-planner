@@ -1,15 +1,14 @@
 import { ClipboardList, LayoutDashboard, Route, Warehouse } from 'lucide-react';
 import { useRef, type ReactNode } from 'react';
 import { DISCLAIMER } from '../../domain/settings';
-import { formatMass, formatNumber, formatPercent } from '../../domain/units';
+import { formatDistance, formatMass, formatPercent } from '../../domain/units';
+import { routeKm } from '../../physics/fuel';
 import { useEvaluation, useUnitSystem } from '../../state/hooks';
 import { useStore, type NavPanel } from '../../state/store';
 import { scrollToItemTable, useLoadSimulation } from './navigation';
 import { HEALTH_DOT, vehicleHealth } from './shellFormat';
 import { StopList } from './StopList';
 import { VehicleList } from './VehicleList';
-
-const KM_PER_MI = 1.609344;
 
 const NAV: { id: NavPanel; label: string; icon: ReactNode }[] = [
   { id: 'loadplan', label: 'Load plan', icon: <LayoutDashboard /> },
@@ -38,7 +37,8 @@ export function Sidebar() {
   const setAnimation = useStore((s) => s.setAnimation);
   const startLoad = useLoadSimulation();
   const stopsRef = useRef<HTMLDivElement>(null);
-  const distanceKm = evaluation.plan.meta.distanceKm;
+  const plan = evaluation.plan;
+  const distanceKm = routeKm(plan);
 
   const go = (id: NavPanel) => {
     setNav(id);
@@ -83,7 +83,9 @@ export function Sidebar() {
           id="sidebar-stops"
           right={
             distanceKm > 0 ? (
-              <span className="num text-[11px] text-muted">{sys === 'metric' ? `${formatNumber(distanceKm, 0)} km` : `${formatNumber(distanceKm / KM_PER_MI, 0)} mi`}</span>
+              <span className="num text-[11px] text-muted" title={plan.meta.returnKm > 0 ? `Includes ${formatDistance(plan.meta.returnKm, sys)} back to the depot` : undefined}>
+                {formatDistance(distanceKm, sys)}
+              </span>
             ) : undefined
           }
         >

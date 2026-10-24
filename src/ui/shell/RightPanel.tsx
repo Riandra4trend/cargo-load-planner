@@ -4,6 +4,7 @@ import { useUnitSystem } from '../../state/hooks';
 import { useStore } from '../../state/store';
 import { AxlePanel } from './AxlePanel';
 import { CogPanel } from './CogPanel';
+import { FuelPanel } from './FuelPanel';
 import { LoadDistributionChart } from './LoadDistributionChart';
 import { SimulationPanel } from './SimulationPanel';
 import { StageTable } from './StageTable';
@@ -31,6 +32,7 @@ export function RightPanel() {
         <SimulationPanel />
         <AxlePanel shown={shown} />
         <StageTable shown={shown} />
+        <FuelPanel shown={shown} />
         <LoadDistributionChart shown={shown} />
         <CogPanel shown={shown} />
         <ViolationsList vehicleId={v.id} />

@@ -3,13 +3,14 @@ import { useState, type ReactNode } from 'react';
 import { TEMP_LABELS } from '../../domain/colors';
 import { defaultSettings, HAZMAT_CLASS_NAMES, HAZMAT_CLASSES, hazmatRule } from '../../domain/settings';
 import type { HazmatRule, PlanMeta, PlanSettings, TempClass, UnitSystem } from '../../domain/types';
-import { bigLengthUnit, weightUnit } from '../../domain/units';
+import { bigLengthUnit, kgToLb, KM_PER_MI, L_PER_US_GAL, lbToKg, weightUnit } from '../../domain/units';
 import { useStore } from '../../state/store';
 import { Button } from '../common/Button';
 import { Field, LengthInput, NumberInput, SegmentedControl, TextInput, WeightInput, inputClass } from '../common/fields';
 import { Modal } from '../common/Modal';
 
-const KM_PER_MI = 1.609344;
+/** Common currencies for fuel cost; any other ISO 4217 code already in the plan is kept. */
+const CURRENCIES = ['USD', 'EUR', 'GBP', 'IDR', 'AUD', 'CAD', 'CHF', 'JPY', 'CNY', 'SGD', 'MYR', 'THB', 'INR', 'BRL', 'MXN', 'ZAR'];
 const NEXT_RULE: Record<HazmatRule, HazmatRule> = { ok: 'separate', separate: 'never', never: 'ok' };
 const RULE_CELL: Record<HazmatRule, [string, string]> = {
   ok: ['bg-ok-soft/60 text-ok/70', '·'],
@@ -175,10 +176,10 @@ function SettingsForm() {
           <Field label="Route">
             <TextInput value={meta.route} onChange={(e) => patchMeta({ route: e.target.value })} />
           </Field>
-          <Field label="Distance">
+          <Field label="Return to depot" hint="Empty drive after the last stop. Leg distances are set per stop in the sidebar.">
             <NumberInput
-              value={sys === 'metric' ? meta.distanceKm : meta.distanceKm / KM_PER_MI}
-              onChange={(n) => patchMeta({ distanceKm: sys === 'metric' ? n : n * KM_PER_MI })}
+              value={sys === 'metric' ? meta.returnKm : meta.returnKm / KM_PER_MI}
+              onChange={(n) => patchMeta({ returnKm: sys === 'metric' ? n : n * KM_PER_MI })}
               min={0}
               digits={1}
               suffix={sys === 'metric' ? 'km' : 'mi'}
@@ -221,6 +222,55 @@ function SettingsForm() {
           </Field>
           <Field label="Near-limit threshold" hint="Axle status turns NEAR LIMIT from here.">
             <NumberInput value={settings.nearLimit * 100} onChange={(n) => patch({ nearLimit: n / 100 })} min={50} max={100} digits={0} suffix="%" />
+          </Field>
+        </Group>
+
+        <Group title="Fuel">
+          <Field label={sys === 'metric' ? 'Diesel price per litre' : 'Diesel price per gallon'}>
+            <div className="flex gap-1">
+              <div className="min-w-0 flex-1">
+                <NumberInput
+                  value={sys === 'metric' ? settings.fuelPricePerL : settings.fuelPricePerL * L_PER_US_GAL}
+                  onChange={(n) => patch({ fuelPricePerL: sys === 'metric' ? n : n / L_PER_US_GAL })}
+                  min={0}
+                  digits={3}
+                  aria-label="Diesel price"
+                />
+              </div>
+              <div className="w-[5.5rem] shrink-0">
+                <select aria-label="Currency" value={settings.currency} onChange={(e) => patch({ currency: e.target.value })} className={inputClass}>
+                  {[...new Set([settings.currency, ...CURRENCIES])].map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </Field>
+          <Field label="CO₂ per unit of diesel" hint="Tank-to-wheel; 2.68 kg/L for fossil diesel.">
+            <NumberInput
+              value={sys === 'metric' ? settings.co2KgPerL : kgToLb(settings.co2KgPerL) * L_PER_US_GAL}
+              onChange={(n) => patch({ co2KgPerL: sys === 'metric' ? n : lbToKg(n) / L_PER_US_GAL })}
+              min={0}
+              digits={2}
+              suffix={sys === 'metric' ? 'kg/L' : 'lb/gal'}
+            />
+          </Field>
+          <Field label="Average driving speed" hint="Sets driving time, which the reefer runs for.">
+            <NumberInput
+              value={sys === 'metric' ? settings.avgSpeedKmh : settings.avgSpeedKmh / KM_PER_MI}
+              onChange={(n) => patch({ avgSpeedKmh: sys === 'metric' ? n : n * KM_PER_MI })}
+              min={1}
+              digits={0}
+              suffix={sys === 'metric' ? 'km/h' : 'mph'}
+            />
+          </Field>
+          <Field label="Time at each stop" hint="The reefer keeps running while cold cargo is aboard.">
+            <NumberInput value={settings.stopMinutes} onChange={(n) => patch({ stopMinutes: n })} min={0} digits={0} suffix="min" />
+          </Field>
+          <Field label="Engine idling at each stop">
+            <NumberInput value={settings.idleMinutesPerStop} onChange={(n) => patch({ idleMinutesPerStop: n })} min={0} digits={0} suffix="min" />
           </Field>
         </Group>
 
