@@ -1,6 +1,6 @@
 import { uid } from './ids';
 import { lbToKg } from './units';
-import type { AxleGroup, FuelProfile, TempZone, Vehicle } from './types';
+import type { AxleGroup, FuelProfile, TankCompartment, TempZone, Vehicle } from './types';
 
 /**
  * Vehicle presets. All values are approximate, typical figures for illustration and fully
@@ -22,6 +22,40 @@ const US_GROSS_MAX = lbToKg(80_000);
 const fullZone = (length: number, temp: TempZone['temp'] = 'ambient'): TempZone[] => [
   { id: 'zone-1', temp, fromX: 0, toX: length },
 ];
+
+/** Compartments along a barrel of `length` metres, each as long as its share of the total capacity. */
+function compartments(length: number, capacitiesL: number[]): TankCompartment[] {
+  const total = capacitiesL.reduce((sum, c) => sum + c, 0);
+  let x = 0;
+  return capacitiesL.map((capacityL, i) => {
+    const fromX = x;
+    x = i === capacitiesL.length - 1 ? length : Math.round((x + (length * capacityL) / total) * 1000) / 1000;
+    return { id: `c${i + 1}`, label: `C${i + 1}`, fromX, toX: x, capacityL };
+  });
+}
+
+const euTractor = (): { steer: AxleGroup; drive: AxleGroup; fifthWheelX: number } => ({
+  steer: { id: 'steer', label: 'Steer axle', x: 0, count: 1, spread: 0, tareKg: 4700, maxKg: 7500, minShare: 0.1, steer: true },
+  drive: { id: 'drive', label: 'Drive axle', x: 3.6, count: 1, spread: 0, tareKg: 2700, maxKg: 11_500, minShare: 0.25, driven: true },
+  fifthWheelX: 2.9,
+});
+
+/** Fields shared by every tanker: top access only, no floor bays or doors in use, ambient (insulation is on the tank). */
+const tankerBase = (l: number, w: number, h: number) => ({
+  kind: 'tanker' as const,
+  cargo: { l, w, h },
+  door: { w, h },
+  access: ['top' as const],
+  walls: true,
+  tempControlled: false,
+  multiTemp: false,
+  zones: fullZone(l),
+  airflowTopGap: 0,
+  floorKgPerM: 10_000,
+  maxCogHeight: h,
+  bridgeFormula: false,
+  lateralMaxImbalance: 0.1,
+});
 
 const usTractor = (): { steer: AxleGroup; drive: AxleGroup; fifthWheelX: number } => ({
   steer: { id: 'steer', label: 'Steer axle', x: 0, count: 1, spread: 0, tareKg: 4500, maxKg: US_STEER_MAX, minShare: 0.1, steer: true },
@@ -261,6 +295,80 @@ const PRESETS: Record<string, () => PresetBody> = {
       ...usTractor(),
     },
   }),
+  'tanker-rigid-16k': () => ({
+    presetId: 'tanker-rigid-16k',
+    name: 'Fuel tanker 16,000 L (rigid 6×4)',
+    region: 'EU',
+    ...tankerBase(6.2, 2.3, 1.6),
+    grossLimitKg: 26_000,
+    payloadKg: 16_000,
+    deckHeight: 1.3,
+    bayLength: 1.55,
+    fuel: { emptyLPer100km: 26, fullLPer100km: 34, idleLPerHour: 2.2, reeferLPerHour: 0, tankL: 300 },
+    statics: {
+      type: 'rigid',
+      front: { id: 'front', label: 'Front axle', x: -2.0, count: 1, spread: 0, tareKg: 5000, maxKg: 8000, minShare: 0.2, steer: true },
+      rear: { id: 'rear', label: 'Rear tandem', x: 4.0, count: 2, spread: 1.35, tareKg: 5000, maxKg: 19_000, minShare: 0.25, driven: true },
+    },
+    tank: { compartments: compartments(6.2, [4000, 4000, 4000, 4000]), baffled: false, foodGrade: false, insulated: false },
+  }),
+  'tanker-semi-32k': () => ({
+    presetId: 'tanker-semi-32k',
+    name: 'Fuel tanker 32,000 L (semi-trailer)',
+    region: 'EU',
+    ...tankerBase(11.5, 2.5, 1.85),
+    grossLimitKg: 40_000,
+    payloadKg: 25_100,
+    deckHeight: 1.25,
+    bayLength: 2.3,
+    fuel: { emptyLPer100km: 24, fullLPer100km: 33, idleLPerHour: 2.5, reeferLPerHour: 0, tankL: 600 },
+    statics: {
+      type: 'artic',
+      kingpinX: 1.0,
+      trailerAxle: { id: 'trailer', label: 'Trailer tridem', x: 8.2, count: 3, spread: 2.62, tareKg: 0, maxKg: 24_000 },
+      trailerTareKg: 7500,
+      trailerTareX: 6.0,
+      ...euTractor(),
+    },
+    tank: { compartments: compartments(11.5, [8000, 6000, 6000, 6000, 6000]), baffled: false, foodGrade: false, insulated: false },
+  }),
+  'tanker-water-8k': () => ({
+    presetId: 'tanker-water-8k',
+    name: 'Water tanker 8,000 L (rigid 4×2)',
+    region: 'EU',
+    ...tankerBase(4.2, 2.2, 1.4),
+    grossLimitKg: 15_000,
+    payloadKg: 9000,
+    deckHeight: 1.2,
+    bayLength: 1.4,
+    fuel: { emptyLPer100km: 16, fullLPer100km: 21, idleLPerHour: 1.5, reeferLPerHour: 0, tankL: 150 },
+    statics: {
+      type: 'rigid',
+      front: { id: 'front', label: 'Front axle', x: -1.4, count: 1, spread: 0, tareKg: 3300, maxKg: 6000, minShare: 0.2, steer: true },
+      rear: { id: 'rear', label: 'Rear axle', x: 3.1, count: 1, spread: 0, tareKg: 2700, maxKg: 10_000, minShare: 0.25, driven: true },
+    },
+    tank: { compartments: compartments(4.2, [8000]), baffled: true, foodGrade: true, insulated: false },
+  }),
+  'tanker-food-24k': () => ({
+    presetId: 'tanker-food-24k',
+    name: 'Food-grade tanker 24,000 L (semi, insulated)',
+    region: 'EU',
+    ...tankerBase(10.0, 2.45, 1.8),
+    grossLimitKg: 40_000,
+    payloadKg: 24_600,
+    deckHeight: 1.3,
+    bayLength: 3.333,
+    fuel: { emptyLPer100km: 25, fullLPer100km: 34, idleLPerHour: 2.5, reeferLPerHour: 0, tankL: 600 },
+    statics: {
+      type: 'artic',
+      kingpinX: 1.0,
+      trailerAxle: { id: 'trailer', label: 'Trailer tridem', x: 7.0, count: 3, spread: 2.62, tareKg: 0, maxKg: 24_000 },
+      trailerTareKg: 8000,
+      trailerTareX: 5.5,
+      ...euTractor(),
+    },
+    tank: { compartments: compartments(10.0, [8000, 8000, 8000]), baffled: true, foodGrade: true, insulated: true },
+  }),
 };
 
 export const VEHICLE_PRESETS: VehiclePresetInfo[] = [
@@ -271,6 +379,10 @@ export const VEHICLE_PRESETS: VehiclePresetInfo[] = [
   { id: 'us-reefer-53', name: 'US 53 ft reefer (multi-temp)', region: 'US', summary: '15.7 m · 20.0 t · 3 temp zones' },
   { id: 'container-40hc', name: '40 ft high-cube container', region: 'US', summary: '12.03 m · 26.6 t box · road-limited' },
   { id: 'us-flatbed-48', name: 'US 48 ft flatbed', region: 'US', summary: '14.6 m · 21.5 t · open deck' },
+  { id: 'tanker-rigid-16k', name: 'Fuel tanker 16,000 L (rigid 6×4)', region: 'EU', summary: '4 × 4,000 L · 16 t payload' },
+  { id: 'tanker-semi-32k', name: 'Fuel tanker 32,000 L (semi-trailer)', region: 'EU', summary: '5 compartments · 25.1 t payload' },
+  { id: 'tanker-water-8k', name: 'Water tanker 8,000 L (rigid 4×2)', region: 'EU', summary: '1 baffled compartment · food-grade' },
+  { id: 'tanker-food-24k', name: 'Food-grade tanker 24,000 L (semi, insulated)', region: 'EU', summary: '3 × 8,000 L · milk, edible oil' },
 ];
 
 /** Fresh, independent vehicle built from a preset. */

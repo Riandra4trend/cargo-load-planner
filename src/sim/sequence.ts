@@ -1,4 +1,4 @@
-import { expandUnits, footprintOverlap, placementBox, type Box } from '../domain/geometry';
+import { compartmentFill, compartmentOf, expandUnits, footprintOverlap, placementBox, type Box } from '../domain/geometry';
 import type { Id, Plan, Vehicle } from '../domain/types';
 
 export interface LoadStep {
@@ -8,8 +8,10 @@ export interface LoadStep {
   box: Box;
   /** 1 = on the floor, 2 = on top of one unit, ... */
   layer: number;
-  /** "front left, floor" */
+  /** "front left, floor" or "compartment C2, 96 % full" */
   position: string;
+  /** Tanker fills: the compartment being filled (box = the liquid in it). */
+  compartmentId?: Id;
 }
 
 const STACK_TOL = 0.02;
@@ -24,14 +26,27 @@ export function describePosition(v: Vehicle, box: Box, layer: number): string {
 }
 
 /**
- * Physical loading order for a forklift working from the rear doors: front-most stacks first,
- * each stack bottom-up. A stacked unit inherits the front edge of the floor unit it rests on.
+ * Physical loading order. Tanker compartments fill front to rear; floor cargo follows a forklift working
+ * from the rear doors: front-most stacks first, each stack bottom-up (a stacked unit inherits the front
+ * edge of the floor unit it rests on).
  */
 export function loadingSequence(plan: Plan, vehicleId: Id): LoadStep[] {
   const v = plan.vehicles.find((x) => x.id === vehicleId);
   if (!v) return [];
   const units = expandUnits(plan).filter((u) => plan.placements[u.id]?.vehicleId === vehicleId);
+  const compartments = v.tank?.compartments ?? [];
+  const fills: LoadStep[] = units
+    .flatMap((u) => {
+      const c = compartmentOf(v, plan.placements[u.id].compartmentId);
+      if (!c) return [];
+      const fill = compartmentFill(u.spec, c);
+      const box: Box = { min: { x: c.fromX, y: 0, z: 0 }, max: { x: c.toX, y: v.cargo.w, z: Math.min(1, fill) * v.cargo.h } };
+      return [{ unitId: u.id, name: u.spec.name, stopSeq: u.stopSeq, box, layer: 1, position: `compartment ${c.label}, ${Math.round(fill * 100)} % full`, compartmentId: c.id }];
+    })
+    .sort((a, b) => compartments.findIndex((c) => c.id === a.compartmentId) - compartments.findIndex((c) => c.id === b.compartmentId));
+  const filled = new Set(fills.map((f) => f.unitId));
   const items = units
+    .filter((u) => !filled.has(u.id))
     .map((u) => ({ u, box: placementBox(plan.placements[u.id], u.spec), rootX: 0, layer: 1 }))
     .sort((a, b) => a.box.min.z - b.box.min.z);
   for (const it of items) {
@@ -44,12 +59,15 @@ export function loadingSequence(plan: Plan, vehicleId: Id): LoadStep[] {
     it.layer = supporters.length ? Math.max(...supporters.map((s) => s.layer)) + 1 : 1;
   }
   items.sort((a, b) => a.rootX - b.rootX || a.box.min.z - b.box.min.z || a.box.min.y - b.box.min.y);
-  return items.map(({ u, box, layer }) => ({
-    unitId: u.id,
-    name: u.spec.name,
-    stopSeq: u.stopSeq,
-    box,
-    layer,
-    position: describePosition(v, box, layer),
-  }));
+  return [
+    ...fills,
+    ...items.map(({ u, box, layer }) => ({
+      unitId: u.id,
+      name: u.spec.name,
+      stopSeq: u.stopSeq,
+      box,
+      layer,
+      position: describePosition(v, box, layer),
+    })),
+  ];
 }

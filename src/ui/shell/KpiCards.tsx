@@ -1,6 +1,6 @@
 import { Boxes, ClipboardCheck, Fuel, Gauge, LayoutGrid, Ruler, Weight } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { bigLengthUnit, formatConsumption, formatLength, formatMass, formatMoney, formatNumber, formatPercent, fromMetres, fuelParts, massParts } from '../../domain/units';
+import { bigLengthUnit, formatConsumption, formatLength, formatMass, formatMoney, formatNumber, formatPercent, fromMetres, litreParts, massParts } from '../../domain/units';
 import { useActiveVehicleEval, useEvaluation, useUnitSystem } from '../../state/hooks';
 import { Card } from '../common/Card';
 import { lowerFirst } from './shellFormat';
@@ -39,7 +39,7 @@ export function KpiCards() {
   const lenUnit = bigLengthUnit(sys);
   const unplaced = evaluation.unplaced.length;
   const fuel = ve.fuel;
-  const [fuelValue, fuelUnit] = fuelParts(fuel.totalL, sys);
+  const [fuelValue, fuelUnit] = litreParts(fuel.totalL, sys);
   const currency = evaluation.plan.settings.currency;
 
   return (

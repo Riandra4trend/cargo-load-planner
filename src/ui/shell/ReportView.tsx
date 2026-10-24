@@ -4,7 +4,7 @@ import { createPortal, flushSync } from 'react-dom';
 import { TEMP_LABELS } from '../../domain/colors';
 import { DISCLAIMER } from '../../domain/settings';
 import type { Plan, Vehicle } from '../../domain/types';
-import { formatConsumption, formatDims, formatDistance, formatFuel, formatLength, formatMass, formatMoney, formatPercent, formatWeight } from '../../domain/units';
+import { formatConsumption, formatDims, formatDistance, formatLength, formatLitres, formatMass, formatMoney, formatPercent, formatWeight } from '../../domain/units';
 import { routeKm } from '../../physics/fuel';
 import { loadingSequence } from '../../sim/sequence';
 import { evaluatePlan, type VehicleEval } from '../../state/evaluate';
@@ -44,19 +44,19 @@ function FuelReport({ plan, ve }: { plan: Plan; ve: VehicleEval }) {
               <td className="num px-2 py-1 text-right font-mono text-[10.5px]">{formatDistance(leg.km, sys, 1)}</td>
               <td className="num px-2 py-1 text-right font-mono text-[10.5px]">{formatMass(leg.cargoKg, sys)}</td>
               <td className="num px-2 py-1 text-right font-mono text-[10.5px]">{formatConsumption(leg.lPer100km, sys)}</td>
-              <td className="num py-1 pl-2 text-right font-mono text-[10.5px]">{formatFuel(leg.litres, sys)}</td>
+              <td className="num py-1 pl-2 text-right font-mono text-[10.5px]">{formatLitres(leg.litres, sys)}</td>
             </tr>
           ))}
         </tbody>
       </table>
       <p className="mt-1.5 text-[11px]">
         <span className="font-semibold">
-          Total {formatFuel(f.totalL, sys)} · {formatMoney(f.cost, plan.settings.currency)} · CO₂ {formatMass(f.co2Kg, sys)}
+          Total {formatLitres(f.totalL, sys)} · {formatMoney(f.cost, plan.settings.currency)} · CO₂ {formatMass(f.co2Kg, sys)}
         </span>
         <span className="text-muted">
           {' '}
-          · driving {formatFuel(f.drivingL, sys)} ({formatConsumption(f.avgLPer100km, sys)} average){f.reeferL > 0 ? ` · reefer ${formatFuel(f.reeferL, sys)}` : ''} · idling {formatFuel(f.idleL, sys)} ·{' '}
-          {formatPercent(f.tankShare)} of the {formatFuel(ve.vehicle.fuel.tankL, sys, 0)} tank
+          · driving {formatLitres(f.drivingL, sys)} ({formatConsumption(f.avgLPer100km, sys)} average){f.reeferL > 0 ? ` · reefer ${formatLitres(f.reeferL, sys)}` : ''} · idling {formatLitres(f.idleL, sys)} ·{' '}
+          {formatPercent(f.tankShare)} of the {formatLitres(ve.vehicle.fuel.tankL, sys, 0)} tank
         </span>
       </p>
     </>
@@ -225,7 +225,7 @@ export function ReportView({ plan }: { plan: Plan }) {
         <MetaItem label="Vehicles" value={plan.vehicles.map((v) => v.name).join(', ')} />
         <MetaItem label="Total cargo" value={`${formatMass(evaluation.totalKg, sys)} · ${evaluation.units.length} units`} />
         <MetaItem label="Orders loaded" value={`${evaluation.orders.loaded} of ${evaluation.orders.total}`} />
-        <MetaItem label="Fuel (estimate)" value={evaluation.fuel.litres > 0 ? `${formatFuel(evaluation.fuel.litres, sys)} · ${formatMoney(evaluation.fuel.cost, plan.settings.currency)}` : ''} />
+        <MetaItem label="Fuel (estimate)" value={evaluation.fuel.litres > 0 ? `${formatLitres(evaluation.fuel.litres, sys)} · ${formatMoney(evaluation.fuel.cost, plan.settings.currency)}` : ''} />
       </dl>
       {m.notes && <p className="mt-2 whitespace-pre-wrap rounded border border-line p-2 text-[11px]">{m.notes}</p>}
 

@@ -1,4 +1,4 @@
-import { expandUnits, placementBox, placementCog } from '../domain/geometry';
+import { bulkCog, compartmentFill, compartmentOf, expandUnits, placementBox, placementCog } from '../domain/geometry';
 import type { BayInfo, BridgeCheck, CargoUnit, CurvePoint, Id, Plan, StageResult, UnitStatus, Vehicle, Violation, AxleState } from '../domain/types';
 import {
   bridgeFormulaChecks,
@@ -88,11 +88,24 @@ export function evaluatePlan(plan: Plan): PlanEval {
 
   for (const v of plan.vehicles) {
     const placed = units.filter((u) => plan.placements[u.id]?.vehicleId === v.id);
-    const boxes = placed.map((u) => placementBox(plan.placements[u.id], u.spec));
-    const points: StagePoint[] = placed.map((u) => {
-      const c = placementCog(plan.placements[u.id], u.spec);
-      return { id: u.id, x: c.x, y: c.y, z: c.z, kg: u.spec.weightKg, stopSeq: u.stopSeq };
+    // Floor cargo has a box; bulk liquid fills sit in a tanker compartment instead.
+    const fills = placed.flatMap((u) => {
+      const c = compartmentOf(v, plan.placements[u.id].compartmentId);
+      return c ? [{ u, c }] : [];
     });
+    const fillIds = new Set(fills.map((f) => f.u.id));
+    const solid = placed.filter((u) => !fillIds.has(u.id));
+    const boxes = solid.map((u) => placementBox(plan.placements[u.id], u.spec));
+    const points: StagePoint[] = [
+      ...solid.map((u) => {
+        const c = placementCog(plan.placements[u.id], u.spec);
+        return { id: u.id, x: c.x, y: c.y, z: c.z, kg: u.spec.weightKg, stopSeq: u.stopSeq };
+      }),
+      ...fills.map(({ u, c }) => {
+        const g = bulkCog(v, c, u.spec);
+        return { id: u.id, x: g.x, y: g.y, z: g.z, kg: u.spec.weightKg, stopSeq: u.stopSeq };
+      }),
+    ];
     const stages = computeStages(v, plan.stops, points, plan.settings.nearLimit);
     const axle = stages[0].axle;
     let curve = curveCache.get(v);
@@ -102,43 +115,73 @@ export function evaluatePlan(plan: Plan): PlanEval {
     }
     const bridge = v.bridgeFormula ? bridgeFormulaChecks(v, axle) : [];
     const floorPeak = peakRunningMetreLoad(
-      placed.map((u, i) => ({ id: u.id, from: boxes[i].min.x, to: boxes[i].max.x, kg: u.spec.weightKg })),
+      solid.map((u, i) => ({ id: u.id, from: boxes[i].min.x, to: boxes[i].max.x, kg: u.spec.weightKg })),
       v.cargo.l,
     );
     const lateral = lateralImbalance(v, axle.cog);
     const cogHeight = axle.cog?.z ?? null;
 
-    const usableH = Math.max(0.01, v.cargo.h - v.airflowTopGap);
-    const usableVolume = v.cargo.l * v.cargo.w * usableH;
-    let placedVolume = 0;
-    let usedLength = 0;
-    let floorArea = 0;
-    boxes.forEach((b) => {
-      const vol = (b.max.x - b.min.x) * (b.max.y - b.min.y) * (b.max.z - b.min.z);
-      placedVolume += vol;
-      usedLength = Math.max(usedLength, b.max.x);
-      if (b.min.z < 0.01) floorArea += (b.max.x - b.min.x) * (b.max.y - b.min.y);
-    });
-
-    const bayCount = Math.max(1, Math.ceil(v.cargo.l / v.bayLength - 1e-9));
-    const bays: BayInfo[] = Array.from({ length: bayCount }, (_, i) => {
-      const fromX = i * v.bayLength;
-      const toX = Math.min(v.cargo.l, (i + 1) * v.bayLength);
-      let kg = 0;
-      let vol = 0;
-      placed.forEach((u, j) => {
-        const b = boxes[j];
-        const len = b.max.x - b.min.x;
-        const overlap = Math.min(toX, b.max.x) - Math.max(fromX, b.min.x);
-        if (overlap <= 0 || len <= 0) return;
-        kg += (u.spec.weightKg * overlap) / len;
-        vol += (b.max.y - b.min.y) * (b.max.z - b.min.z) * overlap;
+    let fill: FillInfo;
+    let bays: BayInfo[];
+    if (v.tank) {
+      // Tankers: fill by litres, and the "bays" are the compartments.
+      const capacityL = v.tank.compartments.reduce((sum, c) => sum + c.capacityL, 0);
+      const litres = fills.reduce((sum, f) => sum + (f.u.spec.liquid?.volumeL ?? 0), 0);
+      fill = {
+        volume: capacityL > 0 ? litres / capacityL : 0,
+        weight: axle.cargoKg / v.payloadKg,
+        units: placed.length,
+        usedLength: fills.reduce((m, f) => Math.max(m, f.c.toX), 0),
+        ldm: 0,
+        placedVolume: litres / 1000,
+        usableVolume: capacityL / 1000,
+      };
+      bays = v.tank.compartments.map((c, index) => {
+        const inside = fills.filter((f) => f.c.id === c.id);
+        return {
+          index,
+          label: c.label,
+          fromX: c.fromX,
+          toX: c.toX,
+          kg: inside.reduce((sum, f) => sum + f.u.spec.weightKg, 0),
+          fill: inside.reduce((sum, f) => sum + compartmentFill(f.u.spec, c), 0),
+        };
       });
-      return { index: i, label: bayLabel(i), fromX, toX, kg, fill: vol / ((toX - fromX) * v.cargo.w * usableH) };
-    });
-    points.forEach((p) => {
-      bayOfUnit[p.id] = bayLabel(Math.min(bayCount - 1, Math.max(0, Math.floor(p.x / v.bayLength))));
-    });
+      for (const f of fills) bayOfUnit[f.u.id] = f.c.label;
+    } else {
+      const usableH = Math.max(0.01, v.cargo.h - v.airflowTopGap);
+      const usableVolume = v.cargo.l * v.cargo.w * usableH;
+      let placedVolume = 0;
+      let usedLength = 0;
+      let floorArea = 0;
+      boxes.forEach((b) => {
+        const vol = (b.max.x - b.min.x) * (b.max.y - b.min.y) * (b.max.z - b.min.z);
+        placedVolume += vol;
+        usedLength = Math.max(usedLength, b.max.x);
+        if (b.min.z < 0.01) floorArea += (b.max.x - b.min.x) * (b.max.y - b.min.y);
+      });
+      fill = { volume: placedVolume / usableVolume, weight: axle.cargoKg / v.payloadKg, units: placed.length, usedLength, ldm: floorArea / 2.4, placedVolume, usableVolume };
+
+      const bayCount = Math.max(1, Math.ceil(v.cargo.l / v.bayLength - 1e-9));
+      bays = Array.from({ length: bayCount }, (_, i) => {
+        const fromX = i * v.bayLength;
+        const toX = Math.min(v.cargo.l, (i + 1) * v.bayLength);
+        let kg = 0;
+        let vol = 0;
+        solid.forEach((u, j) => {
+          const b = boxes[j];
+          const len = b.max.x - b.min.x;
+          const overlap = Math.min(toX, b.max.x) - Math.max(fromX, b.min.x);
+          if (overlap <= 0 || len <= 0) return;
+          kg += (u.spec.weightKg * overlap) / len;
+          vol += (b.max.y - b.min.y) * (b.max.z - b.min.z) * overlap;
+        });
+        return { index: i, label: bayLabel(i), fromX, toX, kg, fill: vol / ((toX - fromX) * v.cargo.w * usableH) };
+      });
+      points.forEach((p) => {
+        bayOfUnit[p.id] = bayLabel(Math.min(bayCount - 1, Math.max(0, Math.floor(p.x / v.bayLength))));
+      });
+    }
 
     physics[v.id] = { vehicle: v, points, stages, bridge, floorPeak, lateral, cogHeight };
     byVehicle[v.id] = {
@@ -150,15 +193,7 @@ export function evaluatePlan(plan: Plan): PlanEval {
       curve,
       peak: curvePeak(curve),
       remaining: remainingCapacity(v, axle),
-      fill: {
-        volume: placedVolume / usableVolume,
-        weight: axle.cargoKg / v.payloadKg,
-        units: placed.length,
-        usedLength,
-        ldm: floorArea / 2.4,
-        placedVolume,
-        usableVolume,
-      },
+      fill,
       bays,
       lateral,
       cogHeight,

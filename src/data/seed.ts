@@ -1,6 +1,7 @@
 import { stopColor } from '../domain/colors';
 import { unitIdOf } from '../domain/geometry';
 import { uid } from '../domain/ids';
+import { liquidDef } from '../domain/liquids';
 import { createVehicle, sliderPositions } from '../domain/presets';
 import { defaultSettings } from '../domain/settings';
 import type { CargoLine, Customer, ItemSpec, Orientation, Placement, Plan, Stop } from '../domain/types';
@@ -25,6 +26,28 @@ export function makeSpec(partial: Partial<ItemSpec> & Pick<ItemSpec, 'name' | 'd
     isFood: false,
     ...partial,
   };
+}
+
+/**
+ * One tanker compartment fill of a library liquid: weight = volume × density, with the liquid's hazmat
+ * entry, food flag and temperature class. Dimensions are nominal (bulk fills have no box).
+ */
+export function makeBulkLiquidSpec(liquidId: string, volumeL: number, partial: Partial<ItemSpec> = {}): ItemSpec {
+  const def = liquidDef(liquidId);
+  if (!def) throw new Error(`Unknown liquid: ${liquidId}`);
+  return makeSpec({
+    name: def.name,
+    category: 'Bulk liquid',
+    packaging: 'bulk-liquid',
+    dims: { l: 1, w: 1, h: 1 },
+    weightKg: volumeL * def.densityKgPerL,
+    rotation: 'none',
+    temp: def.temp,
+    isFood: def.isFood,
+    hazmat: def.hazmat ? { ...def.hazmat } : undefined,
+    liquid: { liquidId, name: def.name, densityKgPerL: def.densityKgPerL, volumeL },
+    ...partial,
+  });
 }
 
 const EUR = { l: 1.2, w: 0.8 };
@@ -226,6 +249,58 @@ export function createSeedPlan(): Plan {
       driver: '',
       notes: '',
     },
+    customers,
+    stops,
+    lines,
+    vehicles: [vehicle],
+    placements,
+    settings: defaultSettings(),
+  };
+}
+
+const TANKER_STATIONS = [
+  { name: 'Cibubur fuel station', customer: 'Station Cibubur', distanceKm: 14 },
+  { name: 'Cileungsi fuel station', customer: 'Station Cileungsi', distanceKm: 11 },
+  { name: 'Jonggol fuel station', customer: 'Station Jonggol', distanceKm: 17 },
+];
+
+/** [line key, liquid, litres, stop, compartment] */
+const TANKER_LOADS: [string, string, number, number, string][] = [
+  ['diesel-1', 'diesel', 7700, 1, 'c1'],
+  ['gasoline-1', 'gasoline', 5800, 1, 'c2'],
+  ['gasoline-2', 'gasoline', 5800, 2, 'c3'],
+  ['diesel-2', 'diesel', 5800, 2, 'c4'],
+  ['diesel-3', 'diesel', 3200, 3, 'c5'],
+];
+
+/**
+ * Fuel delivery on the 32,000 L semi tanker. The compartments are filled in order, which leaves the drive
+ * axle over its limit at departure and the half-full rear compartment surging; Optimise reassigns them.
+ */
+export function createTankerSeedPlan(): Plan {
+  const customers: Customer[] = TANKER_STATIONS.map((s, i) => ({ id: `cust-${i + 1}`, name: s.customer, color: stopColor(i + 1) }));
+  const stops: Stop[] = TANKER_STATIONS.map((s, i) => ({ id: `stop-${i + 1}`, name: s.name, customerId: customers[i].id, sequence: i + 1, distanceKm: s.distanceKm }));
+  const vehicle = createVehicle('tanker-semi-32k', 'veh-1');
+  vehicle.name = 'Truck 1 · Fuel tanker 32,000 L';
+  const lines: CargoLine[] = TANKER_LOADS.map(([key, liquidId, litres, stop]) => ({
+    id: `line-${key}`,
+    spec: makeBulkLiquidSpec(liquidId, litres),
+    quantity: 1,
+    contents: `${litres.toLocaleString('en-US')} L`,
+    stopId: stops[stop - 1].id,
+    priority: 'normal',
+  }));
+  const placements: Record<string, Placement> = {};
+  for (const [key, , , , compartmentId] of TANKER_LOADS) {
+    const unitId = unitIdOf(`line-${key}`, 0);
+    const c = vehicle.tank!.compartments.find((x) => x.id === compartmentId)!;
+    placements[unitId] = { unitId, vehicleId: vehicle.id, compartmentId, pos: { x: c.fromX, y: 0, z: 0 }, orient: 0 };
+  }
+  return {
+    version: 1,
+    id: uid('plan'),
+    name: 'Fuel run F-07 · three stations',
+    meta: { date: new Date().toISOString().slice(0, 10), time: '05:00', dock: 'Loading bay 2', route: 'F-07', returnKm: 24, driver: '', notes: '' },
     customers,
     stops,
     lines,

@@ -39,7 +39,10 @@ export type PackagingKind =
   | 'crate'
   | 'drum'
   | 'ibc'
+  | 'jerrycan'
   | 'long-goods'
+  /** A tanker compartment fill: no packaging, carried in a tank compartment instead of on the floor. */
+  | 'bulk-liquid'
   | 'custom';
 
 export interface Hazmat {
@@ -49,6 +52,22 @@ export interface Hazmat {
   hazClass: string;
   packingGroup?: PackingGroup;
   netQtyKg?: number;
+}
+
+/**
+ * Liquid contents of a unit. Packaged liquids (drum, IBC, jerrycan) weigh volume × density plus the
+ * container; bulk liquids ('bulk-liquid' packaging) are one tanker compartment fill weighing volume × density.
+ * ItemSpec.weightKg stays the authoritative gross weight and is derived from these values by the editor.
+ */
+export interface LiquidContents {
+  /** Library id from domain/liquids.ts, or 'custom'. */
+  liquidId: string;
+  /** Display name, e.g. "Diesel (solar)". */
+  name: string;
+  /** Density at 15 °C, kg per litre. */
+  densityKgPerL: number;
+  /** Liquid per unit, litres. */
+  volumeL: number;
 }
 
 /** Physical and handling definition of one cargo unit (pallet, crate, drum, ...). */
@@ -85,6 +104,8 @@ export interface ItemSpec {
   /** Foodstuff / animal feed: kept away from toxic and infectious hazmat (classes 6.1 and 6.2). */
   isFood: boolean;
   hazmat?: Hazmat;
+  /** Present when the unit is (or contains) a liquid. */
+  liquid?: LiquidContents;
 }
 
 export interface ItemTemplate {
@@ -151,9 +172,11 @@ export interface Placement {
   orient: Orientation;
   /** Pinned units are never moved by the optimiser. */
   pinned?: boolean;
+  /** Bulk liquids only: the tanker compartment holding this fill (pos/orient are then unused). */
+  compartmentId?: Id;
 }
 
-export type VehicleKind = 'van' | 'rigid' | 'semi' | 'container' | 'flatbed';
+export type VehicleKind = 'van' | 'rigid' | 'semi' | 'container' | 'flatbed' | 'tanker';
 export type AccessSide = 'rear' | 'side' | 'top';
 export type Region = 'EU' | 'US' | 'custom';
 
@@ -209,6 +232,27 @@ export interface TempZone {
   toX: number;
 }
 
+export interface TankCompartment {
+  id: Id;
+  /** "C1", "C2", ... (front to rear). */
+  label: string;
+  /** Extent along the tank, metres from the cargo front wall. */
+  fromX: number;
+  toX: number;
+  /** Brim capacity, litres. */
+  capacityL: number;
+}
+
+/** Tank of a tanker vehicle: compartments along the barrel (cargo dims = barrel length × width × height). */
+export interface TankSpec {
+  compartments: TankCompartment[];
+  /** Surge baffles inside the compartments make partial fills safe. */
+  baffled: boolean;
+  /** Food-grade (stainless) tank: may carry foodstuffs such as milk, edible oil or drinking water. */
+  foodGrade: boolean;
+  insulated: boolean;
+}
+
 export interface Vehicle {
   id: Id;
   /** Preset this vehicle was created from, or 'custom'. */
@@ -246,6 +290,8 @@ export interface Vehicle {
   lateralMaxImbalance: number;
   fuel: FuelProfile;
   statics: RigidStatics | ArticStatics;
+  /** Tanker vehicles only. */
+  tank?: TankSpec;
 }
 
 /**
@@ -350,6 +396,7 @@ export type ViolationKind =
   | 'rotation'
   | 'temperature'
   | 'hazmat'
+  | 'tank'
   // soft constraints
   | 'axle-max'
   | 'axle-min'
@@ -360,11 +407,13 @@ export type ViolationKind =
   | 'cog-height'
   | 'floor-load'
   | 'lifo'
-  | 'forklift';
+  | 'forklift'
+  | 'surge';
 
 export type FixAction =
   | { type: 'move'; unitId: Id; pos: Vec3; orient?: Orientation }
-  | { type: 'slider'; vehicleId: Id; x: number };
+  | { type: 'slider'; vehicleId: Id; x: number }
+  | { type: 'compartment'; unitId: Id; vehicleId: Id; compartmentId: Id };
 
 export interface Violation {
   /** Stable key, unique within one evaluation. */

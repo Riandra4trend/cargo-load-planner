@@ -1,4 +1,4 @@
-import type { CargoUnit, Dims, Id, ItemSpec, Orientation, Placement, Plan, Vec3 } from './types';
+import type { CargoUnit, Dims, Id, ItemSpec, Orientation, Placement, Plan, TankCompartment, Vec3, Vehicle } from './types';
 
 type Axis = keyof Dims;
 
@@ -30,7 +30,7 @@ export function orientedSize(dims: Dims, orient: Orientation): Vec3 {
 
 /** Orientations permitted by the item's rotation rule, upright requirement and shape. */
 export function allowedOrientations(spec: ItemSpec): Orientation[] {
-  if (spec.rotation === 'none') return [0];
+  if (spec.rotation === 'none' || spec.packaging === 'bulk-liquid') return [0];
   const uprightOnly = spec.rotation === 'yaw' || spec.keepUpright || spec.shape === 'cylinder-upright';
   return uprightOnly ? [0, 1] : [0, 1, 2, 3, 4, 5];
 }
@@ -79,6 +79,27 @@ export const unitIdOf = (lineId: Id, index: number): Id => `${lineId}#${index}`;
 export function lineIdOfUnit(unitId: Id): Id {
   const i = unitId.lastIndexOf('#');
   return i < 0 ? unitId : unitId.slice(0, i);
+}
+
+/** Bulk liquid fills ride in tanker compartments instead of standing on the floor. */
+export const isBulkLiquid = (spec: ItemSpec): boolean => spec.packaging === 'bulk-liquid';
+
+export function compartmentOf(v: Vehicle, compartmentId: Id | undefined): TankCompartment | undefined {
+  return compartmentId === undefined ? undefined : v.tank?.compartments.find((c) => c.id === compartmentId);
+}
+
+/** Fill of a compartment by a bulk unit, 0..1 of its brim capacity. */
+export function compartmentFill(spec: ItemSpec, c: TankCompartment): number {
+  return c.capacityL > 0 ? (spec.liquid?.volumeL ?? 0) / c.capacityL : 0;
+}
+
+/**
+ * Centre of gravity of a bulk fill: middle of the compartment along x, tank centreline across, and the
+ * liquid's centroid height (fill-proportional, ignoring the tank's curved cross-section).
+ */
+export function bulkCog(v: Vehicle, c: TankCompartment, spec: ItemSpec): Vec3 {
+  const fill = Math.min(1, compartmentFill(spec, c));
+  return { x: (c.fromX + c.toX) / 2, y: v.cargo.w / 2, z: (fill * v.cargo.h) / 2 };
 }
 
 const unitCache = new WeakMap<Plan, CargoUnit[]>();

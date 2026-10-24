@@ -1,7 +1,7 @@
 import { Fuel, Pencil, Settings2 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import type { UnitSystem } from '../../domain/types';
-import { formatConsumption, formatFuel, formatMass, formatMoney, formatNumber, formatPercent, KM_PER_MI, L_PER_US_GAL, lPer100kmToMpg } from '../../domain/units';
+import { formatConsumption, formatLitres, formatMass, formatMoney, formatNumber, formatPercent, KM_PER_MI, L_PER_US_GAL, lPer100kmToMpg } from '../../domain/units';
 import type { FuelEstimate } from '../../physics/fuel';
 import { useUnitSystem } from '../../state/hooks';
 import { useStore } from '../../state/store';
@@ -68,13 +68,13 @@ export function FuelPanel({ shown }: { shown: ShownState }) {
     body = (
       <>
         <div className="grid grid-cols-2 gap-1.5">
-          <Tile label="Fuel" value={formatFuel(f.totalL, sys)} sub={formatMoney(f.cost, currency)} />
+          <Tile label="Fuel" value={formatLitres(f.totalL, sys)} sub={formatMoney(f.cost, currency)} />
           <Tile label="Average" value={formatConsumption(f.avgLPer100km, sys)} sub={f.tonneKm > 0 ? freightEfficiency(f, sys) : undefined} />
           <Tile label="CO₂" value={formatMass(f.co2Kg, sys)} sub={`${formatNumber(f.hours, 1)} h on the road`} />
           <Tile
             label="Tank"
             value={formatPercent(f.tankShare)}
-            sub={f.tankShare > 1 ? 'refuel on the way' : `of ${formatFuel(v.fuel.tankL, sys, 0)}`}
+            sub={f.tankShare > 1 ? 'refuel on the way' : `of ${formatLitres(v.fuel.tankL, sys, 0)}`}
             tone={f.tankShare > 1 ? 'bad' : undefined}
           />
         </div>
@@ -89,7 +89,7 @@ export function FuelPanel({ shown }: { shown: ShownState }) {
             {parts.map((p) => (
               <li key={p.key} className="inline-flex items-center gap-1">
                 <span className={`h-2 w-2 rounded-full ${p.className}`} aria-hidden />
-                {p.label} <span className="num font-mono text-[10.5px] text-ink">{formatFuel(f[p.key], sys)}</span>
+                {p.label} <span className="num font-mono text-[10.5px] text-ink">{formatLitres(f[p.key], sys)}</span>
               </li>
             ))}
           </ul>
@@ -119,7 +119,7 @@ export function FuelPanel({ shown }: { shown: ShownState }) {
                 <td className="num px-1 py-1 text-right font-mono text-[10.5px]">{formatNumber(sys === 'metric' ? leg.km : leg.km / KM_PER_MI, 0)}</td>
                 <td className="num px-1 py-1 text-right font-mono text-[10.5px]">{formatMass(leg.cargoKg, sys)}</td>
                 <td className="num px-1 py-1 text-right font-mono text-[10.5px]">{formatNumber(sys === 'metric' ? leg.lPer100km : lPer100kmToMpg(leg.lPer100km), 1)}</td>
-                <td className="num py-1 pl-1 text-right font-mono text-[10.5px]">{formatFuel(leg.litres, sys)}</td>
+                <td className="num py-1 pl-1 text-right font-mono text-[10.5px]">{formatLitres(leg.litres, sys)}</td>
               </tr>
             ))}
           </tbody>

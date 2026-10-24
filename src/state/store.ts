@@ -49,6 +49,8 @@ export interface DialogState {
   plans?: true;
   share?: true;
   report?: true;
+  /** Liquid weight reference (densities and a volume → weight calculator). */
+  liquids?: true;
 }
 
 export interface DragState {
@@ -170,6 +172,8 @@ export interface StoreState {
   rotateUnit: (unitId: Id) => boolean;
   unplaceUnits: (unitIds: Id[]) => void;
   togglePin: (unitId: Id) => void;
+  /** Puts a bulk liquid fill into a tanker compartment (one fill per compartment). */
+  assignCompartment: (unitId: Id, vehicleId: Id, compartmentId: Id) => void;
   applyFix: (action: FixAction) => void;
 
   // optimise --------------------------------------------------------------
@@ -453,6 +457,12 @@ export const useStore = create<StoreState>()((set, get) => {
       commit('Remove from vehicle', (d) => {
         for (const id of unitIds) delete d.placements[id];
       }),
+    assignCompartment: (unitId, vehicleId, compartmentId) =>
+      commit('Fill compartment', (d) => {
+        const c = d.vehicles.find((v) => v.id === vehicleId)?.tank?.compartments.find((x) => x.id === compartmentId);
+        if (!c) return;
+        d.placements[unitId] = { unitId, vehicleId, compartmentId, pos: { x: c.fromX, y: 0, z: 0 }, orient: 0 };
+      }),
     togglePin: (unitId) =>
       commit('Pin unit', (d) => {
         const p = d.placements[unitId];
@@ -460,6 +470,7 @@ export const useStore = create<StoreState>()((set, get) => {
       }),
     applyFix: (action) => {
       if (action.type === 'slider') get().setSlider(action.vehicleId, action.x);
+      else if (action.type === 'compartment') get().assignCompartment(action.unitId, action.vehicleId, action.compartmentId);
       else get().moveUnit(action.unitId, action.pos, action.orient);
     },
 

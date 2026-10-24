@@ -107,14 +107,19 @@ export function formatDistance(km: number, sys: UnitSystem, digits = 0): string 
   return sys === 'metric' ? `${formatNumber(km, digits)} km` : `${formatNumber(km / KM_PER_MI, digits)} mi`;
 }
 
-/** Fuel volume split for KPI cards: metric ["58.4", "L"], imperial ["15.4", "gal"] (US gallons). */
-export function fuelParts(litres: number, sys: UnitSystem, digits = 1): [string, string] {
+/** Liquid volume split for KPI cards: metric ["58.4", "L"], imperial ["15.4", "gal"] (US gallons). */
+export function litreParts(litres: number, sys: UnitSystem, digits = 1): [string, string] {
   return sys === 'metric' ? [formatNumber(litres, digits), 'L'] : [formatNumber(litres / L_PER_US_GAL, digits), 'gal'];
 }
 
-/** "58.4 L" or "15.4 gal". */
-export function formatFuel(litres: number, sys: UnitSystem, digits = 1): string {
-  return fuelParts(litres, sys, digits).join(' ');
+/** Fuel or liquid cargo volume: "58.4 L" or "15.4 gal". */
+export function formatLitres(litres: number, sys: UnitSystem, digits = 1): string {
+  return litreParts(litres, sys, digits).join(' ');
+}
+
+/** Liquid density: metric "0.84 kg/L", imperial "7.01 lb/gal". */
+export function formatLiquidDensity(kgPerL: number, sys: UnitSystem): string {
+  return sys === 'metric' ? `${formatNumber(kgPerL, 3)} kg/L` : `${formatNumber(kgToLb(kgPerL) * L_PER_US_GAL, 2)} lb/gal`;
 }
 
 /** Driving consumption: metric "38.4 L/100 km", imperial "6.1 mpg" (US gallons). */
