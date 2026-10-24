@@ -1,13 +1,16 @@
 import { uid } from '../../domain/ids';
+import { materialDef } from '../../domain/materials';
 import { compartments, createVehicle, sliderPositions, vehicleTareKg } from '../../domain/presets';
-import type { ArticStatics, AxleGroup, RigidStatics, TankCompartment, TankSpec, TempClass, TempZone, UnitSystem, Vehicle, VehicleKind } from '../../domain/types';
+import type { ArticStatics, AxleGroup, BodyStyle, BulkSpec, Compartment, RigidStatics, TempClass, TempZone, UnitSystem, Vehicle, VehicleKind } from '../../domain/types';
 import { formatLength, formatLitres, formatMass } from '../../domain/units';
 import { curvePeak, loadDistributionCurve } from '../../physics';
 
-/** Pure helpers behind the vehicle editor: statics switching, temperature zones, tank compartments and validation. */
+/** Pure helpers behind the vehicle editor: statics switching, body styles, temperature zones, bulk bodies and validation. */
 
 const round3 = (x: number) => Math.round(x * 1000) / 1000;
 const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));
+/** Loose dry sand, the everyday dump-truck reference load, kg/L (= t/m³). */
+const SAND_KG_PER_L = materialDef('sand-dry')?.densityKgPerL ?? 1.6;
 
 /** Converts a vehicle between rigid and articulated statics with defaults scaled to its cargo length. */
 export function withStaticsType(v: Vehicle, type: 'rigid' | 'artic'): Vehicle {
@@ -51,7 +54,7 @@ export function withStaticsType(v: Vehicle, type: 'rigid' | 'artic'): Vehicle {
   };
 }
 
-// --- tank compartments --------------------------------------------------------
+// --- bulk bodies: tank compartments and the dump body -------------------------
 
 /** Share of the bounding box filled by an elliptical barrel cross-section. */
 const BARREL_SECTION = Math.PI / 4;
@@ -67,9 +70,10 @@ export function barrelLitres(v: Pick<Vehicle, 'cargo'>, length: number = v.cargo
 }
 
 /** A new tank: equal compartments holding about 90 % of the barrel volume, rounded down to 100 L each. */
-export function defaultTank(v: Vehicle): TankSpec {
+export function defaultTank(v: Vehicle): BulkSpec {
   const each = Math.max(100, Math.floor((barrelLitres(v) * DEFAULT_TANK_SHARE) / DEFAULT_COMPARTMENTS / 100) * 100);
   return {
+    kind: 'tank',
     compartments: compartments(v.cargo.l, Array.from({ length: DEFAULT_COMPARTMENTS }, () => each)),
     baffled: false,
     foodGrade: false,
@@ -78,35 +82,80 @@ export function defaultTank(v: Vehicle): TankSpec {
   };
 }
 
-/** Changes the body type; becoming a tanker creates a default tank, leaving it removes the tank. */
+/** Struck (level-full) capacity of a dump body with inside dims l × w × h, litres. */
+export const struckLitres = (cargo: Vehicle['cargo']): number => Math.round(cargo.l * cargo.w * cargo.h * 1000);
+
+/** The single dump-body compartment matching the cargo dims (the cargo space is the body's inside). */
+export function tipperBulk(cargo: Vehicle['cargo']): BulkSpec {
+  return {
+    kind: 'tipper',
+    compartments: [{ id: 'body', label: 'Body', fromX: 0, toX: cargo.l, capacityL: struckLitres(cargo) }],
+    baffled: false,
+    foodGrade: false,
+    insulated: false,
+    pressurised: false,
+  };
+}
+
+/**
+ * Changes the vehicle kind. Tanker and dump truck get their bulk body (a default tank, or the dump body
+ * sized from the cargo dims) with top (and tailgate) access; any other kind removes it. Body styles only
+ * apply to box-type bodies, so bulk vehicles drop theirs.
+ */
 export function withKind(v: Vehicle, kind: VehicleKind): Vehicle {
   if (kind === v.kind) return v;
-  if (kind === 'tanker') return { ...v, kind, tank: v.tank ?? defaultTank(v) };
-  const next = { ...v, kind };
-  delete next.tank;
+  const next: Vehicle = { ...v, kind };
+  if (kind === 'tanker') Object.assign(next, { bulk: v.bulk?.kind === 'tank' ? v.bulk : defaultTank(v), access: ['top'], walls: true });
+  else if (kind === 'tipper') Object.assign(next, { bulk: tipperBulk(v.cargo), access: ['top', 'rear'], walls: true });
+  else delete next.bulk;
+  if (kind === 'tanker' || kind === 'tipper') delete next.body;
+  return next;
+}
+
+/** Body style of a box-type truck; wingbox and dropside open the sides and top, a dropside is an open bed (height = load cap). */
+export function withBody(v: Vehicle, body: BodyStyle): Vehicle {
+  const next: Vehicle = { ...v };
+  if (body === 'box') delete next.body;
+  else next.body = body;
+  if (body === 'box') {
+    const access = v.access.filter((a) => a !== 'top');
+    return { ...next, walls: true, access: access.length ? access : ['rear'] };
+  }
+  if (body === 'curtain') return { ...next, walls: true, access: ['rear', 'side'] };
+  return { ...next, walls: body === 'wingbox', access: ['rear', 'side', 'top'] };
+}
+
+/**
+ * New cargo / body / barrel dims: temperature zones scale, tank compartments follow (re-laid by capacity
+ * or scaled) and a dump body's capacity stays the struck volume of its inside dims.
+ */
+export function withCargo(v: Vehicle, cargo: Vehicle['cargo'], autoLayout: boolean): Vehicle {
+  const next: Vehicle = { ...v, cargo, zones: scaleZones(v.zones, v.cargo.l, cargo.l) };
+  if (v.bulk?.kind === 'tipper') next.bulk = { ...v.bulk, compartments: tipperBulk(cargo).compartments };
+  else if (v.bulk) next.bulk = { ...v.bulk, compartments: fitCompartments(v.bulk.compartments, cargo.l, autoLayout) };
   return next;
 }
 
 /** Positions compartments along 0..L in proportion to their capacities (ids, labels and capacities kept). */
-export function layoutCompartments(list: TankCompartment[], L: number): TankCompartment[] {
+export function layoutCompartments(list: Compartment[], L: number): Compartment[] {
   const weights = list.map((c) => (c.capacityL > 0 ? c.capacityL : 0));
   const laid = compartments(L, weights.some((w) => w > 0) ? weights : weights.map(() => 1));
   return list.map((c, i) => ({ ...c, fromX: laid[i].fromX, toX: laid[i].toX }));
 }
 
 /** True when the compartments sit exactly where layoutCompartments would put them. */
-export function isAutoLayout(list: TankCompartment[], L: number): boolean {
+export function isAutoLayout(list: Compartment[], L: number): boolean {
   const laid = layoutCompartments(list, L);
   return list.every((c, i) => Math.abs(c.fromX - laid[i].fromX) < 0.001 && Math.abs(c.toX - laid[i].toX) < 0.001);
 }
 
 /** Renumbers C1..Cn front to rear unless the user has given custom labels. */
-function relabel(list: TankCompartment[]): TankCompartment[] {
+function relabel(list: Compartment[]): Compartment[] {
   return list.every((c) => AUTO_LABEL.test(c.label)) ? list.map((c, i) => ({ ...c, label: `C${i + 1}` })) : list;
 }
 
 /** Rebuilds contiguous positions from each compartment's current length, in list order, scaled to L. */
-function restack(list: TankCompartment[], L: number): TankCompartment[] {
+function restack(list: Compartment[], L: number): Compartment[] {
   const total = list.reduce((sum, c) => sum + (c.toX - c.fromX), 0);
   let x = 0;
   return list.map((c, i) => {
@@ -117,7 +166,7 @@ function restack(list: TankCompartment[], L: number): TankCompartment[] {
 }
 
 /** Adds a bulkhead: the largest compartment is split into two halves (capacity and length). */
-export function splitCompartment(list: TankCompartment[], L: number, auto: boolean): TankCompartment[] {
+export function splitCompartment(list: Compartment[], L: number, auto: boolean): Compartment[] {
   if (!list.length) return [{ id: uid('comp'), label: 'C1', fromX: 0, toX: L, capacityL: 1000 }];
   const i = list.reduce((best, c, j) => (c.capacityL > list[best].capacityL ? j : best), 0);
   const c = list[i];
@@ -133,7 +182,7 @@ export function splitCompartment(list: TankCompartment[], L: number, auto: boole
 }
 
 /** Removes the bulkhead behind compartment i (or in front of the last one): its space and capacity merge into the neighbour. */
-export function mergeCompartment(list: TankCompartment[], i: number, L: number, auto: boolean): TankCompartment[] {
+export function mergeCompartment(list: Compartment[], i: number, L: number, auto: boolean): Compartment[] {
   if (list.length <= 1) return list;
   const into = i === 0 ? 1 : i - 1;
   const removed = list[i];
@@ -145,7 +194,7 @@ export function mergeCompartment(list: TankCompartment[], i: number, L: number, 
 }
 
 /** Moves compartment i one place toward the front (-1) or rear (+1), keeping each compartment's length. */
-export function moveCompartment(list: TankCompartment[], i: number, dir: -1 | 1, L: number, auto: boolean): TankCompartment[] {
+export function moveCompartment(list: Compartment[], i: number, dir: -1 | 1, L: number, auto: boolean): Compartment[] {
   const j = i + dir;
   if (j < 0 || j >= list.length) return list;
   const next = [...list];
@@ -155,7 +204,7 @@ export function moveCompartment(list: TankCompartment[], i: number, dir: -1 | 1,
 }
 
 /** Manual layout: moves the bulkhead between compartments i and i + 1 to x (kept inside both neighbours). */
-export function moveTankBulkhead(list: TankCompartment[], i: number, x: number): TankCompartment[] {
+export function moveTankBulkhead(list: Compartment[], i: number, x: number): Compartment[] {
   const a = list[i];
   const b = list[i + 1];
   if (!a || !b) return list;
@@ -164,7 +213,7 @@ export function moveTankBulkhead(list: TankCompartment[], i: number, x: number):
 }
 
 /** Fits compartments to a new barrel length: re-laid by capacity (auto) or scaled proportionally (manual). */
-export function fitCompartments(list: TankCompartment[], L: number, auto: boolean): TankCompartment[] {
+export function fitCompartments(list: Compartment[], L: number, auto: boolean): Compartment[] {
   return auto ? layoutCompartments(list, L) : restack(list, L);
 }
 
@@ -302,9 +351,10 @@ export function validateVehicle(v: Vehicle, sys: UnitSystem): VehicleIssue[] {
     if (!v.tempControlled && zones.some((z) => z.temp !== 'ambient')) err('Only temperature-controlled vehicles can have chilled or frozen zones');
   }
 
-  // tank
+  // bulk bodies
+  const bulk = v.bulk;
   if (v.kind === 'tanker') {
-    const list = v.tank?.compartments ?? [];
+    const list = bulk?.kind === 'tank' ? bulk.compartments : [];
     const litres = (l: number) => formatLitres(l, sys, 0);
     if (!list.length) err('A tanker needs at least one tank compartment');
     else {
@@ -324,6 +374,16 @@ export function validateVehicle(v: Vehicle, sys: UnitSystem): VehicleIssue[] {
       const totalL = list.reduce((sum, c) => sum + c.capacityL, 0);
       // Water (1 kg/L) is the common reference; heavier liquids (acids, molasses) reach the payload sooner.
       if (totalL > v.payloadKg + 0.5) warn(`A full load of water (${litres(totalL)} = ${formatMass(totalL, sys)}) exceeds the payload ${formatMass(v.payloadKg, sys)}; part-fill the compartments`);
+    }
+  } else if (v.kind === 'tipper') {
+    const capacityL = bulk?.kind === 'tipper' ? bulk.compartments.reduce((sum, c) => sum + c.capacityL, 0) : 0;
+    if (!(capacityL > 0)) err('Dump body capacity must be greater than 0: enter the inside length, width and height');
+    else {
+      // Level-full dry sand is the everyday reference; most dump bodies hold more than they may legally carry (ODOL).
+      const sandKg = capacityL * SAND_KG_PER_L;
+      if (sandKg > v.payloadKg + 0.5) {
+        warn(`A level-full body of dry sand weighs ${formatMass(sandKg, sys)}, ${formatMass(sandKg - v.payloadKg, sys)} over the payload. Normal for dump trucks; the planner shows the legal fill`);
+      }
     }
   }
 

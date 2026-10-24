@@ -34,8 +34,8 @@ export const TANK_MATERIALS = {
  */
 export const TankModel = memo(function TankModel({ vehicle }: { vehicle: Vehicle }) {
   const { l, w, h } = vehicle.cargo;
-  const compartments = vehicle.tank?.compartments ?? [];
-  const pressurised = !!vehicle.tank?.pressurised;
+  const compartments = vehicle.bulk?.compartments ?? [];
+  const pressurised = !!vehicle.bulk?.pressurised;
   const { x0, x1, head } = tankBarrel(vehicle);
   const shell = pressurised ? TANK_MATERIALS.pressureShell : TANK_MATERIALS.shell;
   const ring = pressurised ? TANK_MATERIALS.pressureRing : TANK_MATERIALS.ring;

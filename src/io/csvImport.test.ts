@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { createEmptyPlan } from '../data/emptyPlan';
-import { createSeedPlan, createTankerSeedPlan, makeSpec } from '../data/seed';
-import { L_PER_US_GAL, lbToKg, M_PER_IN } from '../domain/units';
+import { createSeedPlan, createTankerSeedPlan, createTipperSeedPlan, makeSpec } from '../data/seed';
+import { L_PER_CU_YD, L_PER_US_GAL, lbToKg, M_PER_IN } from '../domain/units';
 import { itemsToCsv } from './csv';
 import {
   autoMapColumns,
   bindNewStops,
-  findLiquid,
+  findMaterial,
   normaliseHazClass,
   normaliseUnNumber,
   parseBoolCell,
@@ -171,8 +171,8 @@ describe('rowsToLines', () => {
     });
   });
 
-  it('finds library liquids by id, name or alias', () => {
-    expect(['diesel', 'Diesel (solar)', 'SOLAR', 'bensin', 'Crude oil', 'cpo', 'brine', 'LPG'].map((t) => findLiquid(t)?.id)).toEqual([
+  it('finds library materials by id, name or alias', () => {
+    expect(['diesel', 'Diesel (solar)', 'SOLAR', 'bensin', 'Crude oil', 'cpo', 'brine', 'LPG', 'sand-wet', 'Sand', 'gravel', 'batubara'].map((t) => findMaterial(t)?.id)).toEqual([
       'diesel',
       'diesel',
       'diesel',
@@ -181,8 +181,12 @@ describe('rowsToLines', () => {
       'palm-oil',
       'seawater',
       'lpg',
+      'sand-wet',
+      'sand-dry',
+      'gravel',
+      'coal',
     ]);
-    expect(findLiquid('unobtainium')).toBeUndefined();
+    expect(findMaterial('unobtainium')).toBeUndefined();
   });
 
   it('imports bulk and packaged liquids: gallons, library data, container defaults and computed weights', () => {
@@ -197,6 +201,7 @@ describe('rowsToLines', () => {
     ].join('\n');
     const { headers, rows } = parseCsvText(tsv);
     const auto = autoMapColumns(headers);
+    expect(auto.mapping.material).toBe(1);
     expect(auto.volumeUnit).toBe('gal');
     expect(auto.densityUnit).toBe('lb/gal');
     const result = rowsToLines(rows, auto.mapping, { ...SI, volumeUnit: auto.volumeUnit!, densityUnit: auto.densityUnit! }, plan);
@@ -205,8 +210,8 @@ describe('rowsToLines', () => {
     expect(result.rowOfLine).toEqual([2, 3, 4, 6]);
     const [diesel, water, acid, heavy] = result.lines.map((l) => l.spec);
 
-    expect(diesel.packaging).toBe('bulk-liquid');
-    expect(diesel.liquid).toEqual({ liquidId: 'diesel', name: 'Diesel (solar)', densityKgPerL: 0.84, volumeL: 2000 * L_PER_US_GAL });
+    expect(diesel.packaging).toBe('bulk');
+    expect(diesel.material).toEqual({ materialId: 'diesel', name: 'Diesel (solar)', state: 'liquid', densityKgPerL: 0.84, volumeL: 2000 * L_PER_US_GAL });
     expect(diesel.weightKg).toBeCloseTo(2000 * L_PER_US_GAL * 0.84, 6);
     expect(diesel.hazmat).toEqual({ unNumber: 'UN1202', hazClass: '3', packingGroup: 'III' });
     expect(diesel.dims).toEqual({ l: 1, w: 1, h: 1 });
@@ -215,7 +220,7 @@ describe('rowsToLines', () => {
     expect(result.lines[0].stopId).toBe(result.newStops[0].key);
 
     expect(water.packaging).toBe('ibc');
-    expect(water.liquid?.volumeL).toBe(1000);
+    expect(water.material?.volumeL).toBe(1000);
     expect(water.weightKg).toBe(1000 + 60);
     expect(water.dims).toEqual({ l: 1.2, w: 1.0, h: 1.15 });
     expect(water.hazmat).toBeUndefined();
@@ -223,13 +228,73 @@ describe('rowsToLines', () => {
 
     expect(acid.name).toBe('Sulfuric acid 98 %');
     expect(acid.shape).toBe('cylinder-upright');
-    expect(acid.liquid?.volumeL).toBe(200);
+    expect(acid.material?.volumeL).toBe(200);
     expect(acid.weightKg).toBeCloseTo(200 * 1.84 + 18, 6);
     expect(acid.hazmat?.hazClass).toBe('8');
 
-    expect(heavy.liquid?.densityKgPerL).toBeCloseTo(lbToKg(7.1) / L_PER_US_GAL, 9);
-    expect(result.report.some((r) => r.row === 5 && r.level === 'error' && /not in the liquid library/.test(r.message))).toBe(true);
+    expect(heavy.material?.densityKgPerL).toBeCloseTo(lbToKg(7.1) / L_PER_US_GAL, 9);
+    expect(result.report.some((r) => r.row === 5 && r.level === 'error' && /not in the material library/.test(r.message))).toBe(true);
   });
+
+  it('imports dry bulk in m³ and cubic yards with densities in t/m³ or kg/m³', () => {
+    const plan = createTipperSeedPlan();
+    const tsv = [
+      'Commodity\tVolume (m³)\tDensity (t/m³)\tTruck\tStop',
+      'Sand (wet)\t10\t\tB 9123 XY\t1',
+      'Gravel\t13 cu yd\t\t\t1',
+      'Volcanic ash\t6\t1.8\t\t2',
+      'Soil fill\t5 m3\t\t\t1',
+      'Coal\t8\t850 kg/m3\t\t1',
+      'Pebbles\t4\t16\t\t1',
+    ].join('\n');
+    const { headers, rows } = parseCsvText(tsv);
+    const auto = autoMapColumns(headers);
+    expect(auto.mapping).toMatchObject({ material: 0, volume: 1, density: 2, stop: 4 });
+    expect(auto.volumeUnit).toBe('m3');
+    expect(auto.densityUnit).toBe('t/m3');
+    expect(rowsToLines([], auto.mapping, SI, plan).report.filter((r) => r.level === 'error')).toEqual([]);
+    const result = rowsToLines(rows, auto.mapping, { ...SI, volumeUnit: auto.volumeUnit!, densityUnit: auto.densityUnit! }, plan);
+
+    expect(result.rowOfLine).toEqual([2, 3, 4, 6]);
+    const [sand, gravel, ash, coal] = result.lines.map((l) => l.spec);
+    expect(sand.packaging).toBe('bulk');
+    expect(sand.category).toBe('Dry bulk');
+    expect(sand.material).toEqual({ materialId: 'sand-wet', name: 'Sand (wet)', state: 'solid', densityKgPerL: 1.9, volumeL: 10_000 });
+    expect(sand.weightKg).toBeCloseTo(19_000, 6);
+    expect(gravel.material?.volumeL).toBeCloseTo(13 * L_PER_CU_YD, 6);
+    expect(gravel.material?.state).toBe('solid');
+    expect(ash.material).toEqual({ materialId: 'custom', name: 'Volcanic ash', state: 'solid', densityKgPerL: 1.8, volumeL: 6000 });
+    expect(ash.weightKg).toBeCloseTo(10_800, 6);
+    expect(coal.material?.densityKgPerL).toBeCloseTo(0.85, 9);
+    const errors = result.report.filter((r) => r.level === 'error');
+    expect(errors.map((e) => e.row)).toEqual([5, 7]);
+    expect(errors[0].message).toMatch(/"Soil fill" is not in the material library/);
+    expect(errors[1].message).toMatch(/implausible for a solid/);
+  });
+
+  it('treats an unknown "product" without volume or density as ordinary goods', () => {
+    const { headers, rows } = parseCsvText('Product,Length (cm),Width (cm),Height (cm),Weight (kg)\nTV carton,120,20,80,30');
+    const auto = autoMapColumns(headers);
+    expect(auto.mapping.name).toBe(0);
+    expect(auto.mapping.material).toBeUndefined();
+    const [line] = rowsToLines(rows, auto.mapping, { ...SI, lengthUnit: 'cm' }, createSeedPlan()).lines;
+    expect(line.spec.name).toBe('TV carton');
+    expect(line.spec.material).toBeUndefined();
+  });
+
+  const expectRoundTrip = (plan: ReturnType<typeof createSeedPlan>) => {
+    const { headers, rows } = parseCsvText(itemsToCsv(plan));
+    const auto = autoMapColumns(headers);
+    const result = rowsToLines(rows, auto.mapping, { ...SI, volumeUnit: auto.volumeUnit ?? 'auto', densityUnit: auto.densityUnit ?? 'auto' }, plan);
+    expect(result.report.filter((r) => r.level === 'error')).toEqual([]);
+    expect(result.lines).toHaveLength(plan.lines.length);
+    result.lines.forEach((line, i) => {
+      expect(line.spec).toEqual(plan.lines[i].spec);
+      expect(line.quantity).toBe(plan.lines[i].quantity);
+      expect(line.stopId).toBe(plan.lines[i].stopId);
+      expect(line.priority).toBe(plan.lines[i].priority);
+    });
+  };
 
   it('round-trips bulk fills, packaged and custom liquids through itemsToCsv', () => {
     const plan = createTankerSeedPlan();
@@ -246,7 +311,7 @@ describe('rowsToLines', () => {
           shape: 'cylinder-upright',
           dims: { l: 0.585, w: 0.585, h: 0.88 },
           weightKg: 200 * 0.84 + 18,
-          liquid: { liquidId: 'diesel', name: 'Diesel (solar)', densityKgPerL: 0.84, volumeL: 200 },
+          material: { materialId: 'diesel', name: 'Diesel (solar)', state: 'liquid', densityKgPerL: 0.84, volumeL: 200 },
           hazmat: { unNumber: 'UN1202', hazClass: '3', packingGroup: 'III' },
         }),
       },
@@ -259,20 +324,32 @@ describe('rowsToLines', () => {
           name: 'Coolant concentrate',
           dims: { l: 0.4, w: 0.3, h: 0.5 },
           weightKg: 58.5,
-          liquid: { liquidId: 'custom', name: 'Coolant concentrate', densityKgPerL: 1.11, volumeL: 50, containerCapacityL: 60 },
+          material: { materialId: 'custom', name: 'Coolant concentrate', state: 'liquid', densityKgPerL: 1.11, volumeL: 50, containerCapacityL: 60 },
         }),
       },
     );
-    const { headers, rows } = parseCsvText(itemsToCsv(plan));
-    const result = rowsToLines(rows, autoMapColumns(headers).mapping, SI, plan);
-    expect(result.report.filter((r) => r.level === 'error')).toEqual([]);
-    expect(result.lines).toHaveLength(plan.lines.length);
-    result.lines.forEach((line, i) => {
-      expect(line.spec).toEqual(plan.lines[i].spec);
-      expect(line.quantity).toBe(plan.lines[i].quantity);
-      expect(line.stopId).toBe(plan.lines[i].stopId);
-      expect(line.priority).toBe(plan.lines[i].priority);
+    expectRoundTrip(plan);
+  });
+
+  it('round-trips the dump-truck sample and a custom solid, also in imperial plans', () => {
+    const plan = createTipperSeedPlan();
+    plan.lines.push({
+      id: 'line-ash',
+      quantity: 1,
+      stopId: plan.stops[0].id,
+      priority: 'normal',
+      spec: makeSpec({
+        name: 'Volcanic ash',
+        category: 'Dry bulk',
+        packaging: 'bulk',
+        rotation: 'none',
+        dims: { l: 1, w: 1, h: 1 },
+        weightKg: 6000 * 1.8,
+        material: { materialId: 'custom', name: 'Volcanic ash', state: 'solid', densityKgPerL: 1.8, volumeL: 6000 },
+      }),
     });
+    expectRoundTrip(plan);
+    expectRoundTrip({ ...plan, settings: { ...plan.settings, units: 'imperial' } });
   });
 });
 

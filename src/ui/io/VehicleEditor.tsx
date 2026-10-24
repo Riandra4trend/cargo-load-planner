@@ -2,19 +2,19 @@ import { ChevronDown, ChevronUp, CircleAlert, Plus, Trash2, TriangleAlert, Truck
 import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import { TEMP_LABELS } from '../../domain/colors';
 import { uid } from '../../domain/ids';
+import { materialDef } from '../../domain/materials';
 import { createCustomVehicle, createVehicle, sliderPositions, VEHICLE_PRESETS, vehicleTareKg } from '../../domain/presets';
-import type { AccessSide, ArticStatics, AxleGroup, FuelProfile, Id, Region, TankCompartment, TankSpec, TempClass, UnitSystem, Vehicle, VehicleKind } from '../../domain/types';
-import { bigLengthUnit, formatLength, formatLitres, formatMass, formatPercent, kgToLb, L_PER_US_GAL, lbToKg, lPer100kmToMpg, M_PER_FT, weightUnit } from '../../domain/units';
-import { curvePeak, loadDistributionCurve } from '../../physics';
+import type { AccessSide, ArticStatics, AxleGroup, BodyStyle, BulkSpec, Compartment, FuelProfile, Id, Region, TempClass, UnitSystem, Vehicle, VehicleKind } from '../../domain/types';
+import { bigLengthUnit, formatLength, formatLitres, formatMass, formatMaterialVolume, formatPercent, kgToLb, L_PER_US_GAL, lbToKg, lPer100kmToMpg, M_PER_FT, weightUnit } from '../../domain/units';
+import { curvePeak, loadDistributionCurve, maxLegalFill } from '../../physics';
 import { useUnitSystem } from '../../state/hooks';
 import { useStore } from '../../state/store';
 import { Button, IconButton } from '../common/Button';
-import { Field, LengthInput, LitresInput, NumberInput, SegmentedControl, Select, TextInput, Toggle, WeightInput } from '../common/fields';
+import { Field, inputClass, LengthInput, LitresInput, NumberInput, SegmentedControl, Select, TextInput, Toggle, WeightInput } from '../common/fields';
 import { Modal } from '../common/Modal';
 import {
   addZone,
   barrelLitres,
-  fitCompartments,
   isAutoLayout,
   layoutCompartments,
   mergeCompartment,
@@ -22,9 +22,10 @@ import {
   moveCompartment,
   moveTankBulkhead,
   removeZone,
-  scaleZones,
   splitCompartment,
   validateVehicle,
+  withBody,
+  withCargo,
   withKind,
   withStaticsType,
 } from './vehicleDraft';
@@ -32,9 +33,18 @@ import { LoadCurveChart, VehicleSchematic } from './VehiclePreview';
 
 const CUSTOM = 'custom';
 const REGIONS: { value: Region; label: string }[] = [
+  { value: 'ID', label: 'Indonesia' },
   { value: 'EU', label: 'EU' },
   { value: 'US', label: 'US' },
+  { value: 'INTL', label: 'International (ISO)' },
   { value: 'custom', label: 'Other' },
+];
+/** Preset groups in the "Start from" select. */
+const PRESET_GROUPS: { region: Region; label: string }[] = [
+  { region: 'ID', label: 'Indonesia' },
+  { region: 'EU', label: 'Europe' },
+  { region: 'US', label: 'United States' },
+  { region: 'INTL', label: 'International (ISO containers)' },
 ];
 const KINDS: { value: VehicleKind; label: string }[] = [
   { value: 'van', label: 'Van' },
@@ -43,7 +53,18 @@ const KINDS: { value: VehicleKind; label: string }[] = [
   { value: 'container', label: 'Container chassis' },
   { value: 'flatbed', label: 'Flatbed' },
   { value: 'tanker', label: 'Tanker' },
+  { value: 'tipper', label: 'Dump truck' },
 ];
+/** Kinds whose body can be a box, curtainsider, wingbox or dropside. */
+const STYLED_KINDS: VehicleKind[] = ['van', 'rigid', 'semi'];
+const BODY_STYLES: { value: BodyStyle; label: string }[] = [
+  { value: 'box', label: 'Box' },
+  { value: 'curtain', label: 'Curtainsider' },
+  { value: 'wingbox', label: 'Wingbox' },
+  { value: 'dropside', label: 'Dropside' },
+];
+/** Reference loads shown for a dump body: struck capacity × bulk density. */
+const DUMP_REFERENCE = ['sand-dry', 'sand-wet', 'gravel', 'coal'].flatMap((id) => materialDef(id) ?? []);
 const ACCESS: { value: AccessSide; label: string }[] = [
   { value: 'rear', label: 'Rear' },
   { value: 'side', label: 'Side' },
@@ -181,7 +202,7 @@ export function VehicleEditor({ request }: { request: { mode: 'create' | 'edit';
   const [presetId, setPresetId] = useState('eu-rigid-18');
   const [draft, setDraft] = useState<Vehicle | null>(() => initialDraft(request, vehicles, presetId));
   /** Compartment positions follow their capacities; off = the user places each bulkhead. */
-  const [autoLayout, setAutoLayout] = useState(() => !draft?.tank || isAutoLayout(draft.tank.compartments, draft.cargo.l));
+  const [autoLayout, setAutoLayout] = useState(() => !draft?.bulk || isAutoLayout(draft.bulk.compartments, draft.cargo.l));
   const close = useCallback(() => closeDialog('vehicleEditor'), [closeDialog]);
 
   const issues = useMemo(() => (draft ? validateVehicle(draft, sys) : []), [draft, sys]);
@@ -204,8 +225,7 @@ export function VehicleEditor({ request }: { request: { mode: 'create' | 'edit';
   const set = (patch: Partial<Vehicle>) => setDraft({ ...v, ...patch });
   const setArtic = (patch: Partial<ArticStatics>) => s.type === 'artic' && set({ statics: { ...s, ...patch } });
 
-  const setCargoLength = (l: number) =>
-    set({ cargo: { ...v.cargo, l }, zones: scaleZones(v.zones, v.cargo.l, l), ...(v.tank ? { tank: { ...v.tank, compartments: fitCompartments(v.tank.compartments, l, autoLayout) } } : {}) });
+  const setCargo = (patch: Partial<Vehicle['cargo']>) => setDraft(withCargo(v, { ...v.cargo, ...patch }, autoLayout));
   const setTempControlled = (on: boolean) =>
     set(
       on
@@ -222,14 +242,14 @@ export function VehicleEditor({ request }: { request: { mode: 'create' | 'edit';
     setAutoLayout(true);
   };
   const setKind = (kind: VehicleKind) => {
-    if (kind === 'tanker' && !v.tank) setAutoLayout(true);
+    if (kind === 'tanker' && v.bulk?.kind !== 'tank') setAutoLayout(true);
     setDraft(withKind(v, kind));
   };
 
   // tank (tankers only)
-  const tank = v.kind === 'tanker' ? v.tank : undefined;
-  const setTank = (patch: Partial<TankSpec>) => tank && set({ tank: { ...tank, ...patch } });
-  const setCompartments = (list: TankCompartment[]) => setTank({ compartments: list });
+  const tank = v.kind === 'tanker' && v.bulk?.kind === 'tank' ? v.bulk : undefined;
+  const setTank = (patch: Partial<BulkSpec>) => tank && set({ bulk: { ...tank, ...patch } });
+  const setCompartments = (list: Compartment[]) => setTank({ compartments: list });
   const setCapacity = (id: Id, capacityL: number) => {
     const list = (tank?.compartments ?? []).map((c) => (c.id === id ? { ...c, capacityL } : c));
     setCompartments(autoLayout ? layoutCompartments(list, v.cargo.l) : list);
@@ -240,10 +260,15 @@ export function VehicleEditor({ request }: { request: { mode: 'create' | 'edit';
   };
   const tankLitres = tank?.compartments.reduce((sum, c) => sum + c.capacityL, 0) ?? 0;
 
+  // dump body (dump trucks only): one compartment, capacity = struck volume of the inside dims
+  const dumpBody = v.kind === 'tipper' && v.bulk?.kind === 'tipper' ? v.bulk.compartments[0] : undefined;
+  const bulkBody = tank ?? (v.kind === 'tipper' ? v.bulk : undefined);
+  const styled = STYLED_KINDS.includes(v.kind);
+
   // Fills placed in this vehicle whose compartment the edit removes go back to Unplaced on save.
   const ownPlacements = request.mode === 'edit' ? Object.values(placements).filter((p) => p.vehicleId === v.id) : [];
-  const orphanIds = ownPlacements.filter((p) => p.compartmentId !== undefined && !tank?.compartments.some((c) => c.id === p.compartmentId)).map((p) => p.unitId);
-  const packagedAboard = tank ? ownPlacements.filter((p) => p.compartmentId === undefined).length : 0;
+  const orphanIds = ownPlacements.filter((p) => p.compartmentId !== undefined && !bulkBody?.compartments.some((c) => c.id === p.compartmentId)).map((p) => p.unitId);
+  const packagedAboard = bulkBody ? ownPlacements.filter((p) => p.compartmentId === undefined).length : 0;
 
   const save = () => {
     if (errors.length) return;
@@ -305,12 +330,20 @@ export function VehicleEditor({ request }: { request: { mode: 'create' | 'edit';
             <div className={grid}>
               {request.mode === 'create' && (
                 <Field label="Start from" className="col-span-2 sm:col-span-3">
-                  <Select
-                    value={presetId}
-                    onChange={choosePreset}
-                    options={[...VEHICLE_PRESETS.map((p) => ({ value: p.id, label: `${p.name} — ${p.summary}` })), { value: CUSTOM, label: 'Blank custom vehicle (rigid)' }]}
-                    aria-label="Start from preset"
-                  />
+                  <select value={presetId} onChange={(e) => choosePreset(e.target.value)} className={`${inputClass} pr-7`} aria-label="Start from preset">
+                    {PRESET_GROUPS.map((g) => (
+                      <optgroup key={g.region} label={g.label}>
+                        {VEHICLE_PRESETS.filter((p) => p.region === g.region).map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name} — {p.summary}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ))}
+                    <optgroup label="Custom">
+                      <option value={CUSTOM}>Blank custom vehicle (rigid)</option>
+                    </optgroup>
+                  </select>
                 </Field>
               )}
               <Field label="Name" className="col-span-2 sm:col-span-1">
@@ -319,9 +352,17 @@ export function VehicleEditor({ request }: { request: { mode: 'create' | 'edit';
               <Field label="Region">
                 <Select value={v.region} onChange={(region) => set({ region })} options={REGIONS} aria-label="Region" />
               </Field>
-              <Field label="Body">
-                <Select value={v.kind} onChange={setKind} options={KINDS} aria-label="Body type" />
+              <Field label="Vehicle type">
+                <Select value={v.kind} onChange={setKind} options={KINDS} aria-label="Vehicle type" />
               </Field>
+              {styled && (
+                <Field
+                  label="Body style"
+                  hint={v.body === 'wingbox' ? 'Both sides lift: loads from the rear, sides and top' : v.body === 'dropside' ? 'Open bed: the height is a load cap, sides and top open' : undefined}
+                >
+                  <Select value={v.body ?? 'box'} onChange={(body) => setDraft(withBody(v, body))} options={BODY_STYLES} aria-label="Body style" />
+                </Field>
+              )}
               <Field label="Statics" className="col-span-2 sm:col-span-3">
                 <SegmentedControl
                   label="Statics type"
@@ -336,16 +377,16 @@ export function VehicleEditor({ request }: { request: { mode: 'create' | 'edit';
             </div>
           </Section>
 
-          <Section title={tank ? 'Tank barrel and access' : 'Cargo space and doors'}>
+          <Section title={tank ? 'Tank barrel and access' : dumpBody ? 'Dump body (inside) and access' : 'Cargo space and doors'}>
             <div className={grid}>
-              <Field label={tank ? 'Barrel length' : 'Cargo length'}>
-                <LengthInput metres={v.cargo.l} onChange={setCargoLength} unit={lu} aria-label="Cargo length" />
+              <Field label={tank ? 'Barrel length' : dumpBody ? 'Body inside length' : 'Cargo length'}>
+                <LengthInput metres={v.cargo.l} onChange={(l) => setCargo({ l })} unit={lu} aria-label="Cargo length" />
               </Field>
-              <Field label={tank ? 'Barrel width' : 'Cargo width'}>
-                <LengthInput metres={v.cargo.w} onChange={(w) => set({ cargo: { ...v.cargo, w } })} unit={lu} aria-label="Cargo width" />
+              <Field label={tank ? 'Barrel width' : dumpBody ? 'Body inside width' : 'Cargo width'}>
+                <LengthInput metres={v.cargo.w} onChange={(w) => setCargo({ w })} unit={lu} aria-label="Cargo width" />
               </Field>
-              <Field label={tank ? 'Barrel height' : v.walls ? 'Cargo height' : 'Height cap'}>
-                <LengthInput metres={v.cargo.h} onChange={(h) => set({ cargo: { ...v.cargo, h } })} unit={lu} aria-label="Cargo height" />
+              <Field label={tank ? 'Barrel height' : dumpBody ? 'Side height' : v.walls ? 'Cargo height' : 'Height cap'}>
+                <LengthInput metres={v.cargo.h} onChange={(h) => setCargo({ h })} unit={lu} aria-label="Cargo height" />
               </Field>
               <Field label="Door width">
                 <LengthInput metres={v.door.w} onChange={(w) => set({ door: { ...v.door, w } })} unit={lu} aria-label="Door width" />
@@ -382,6 +423,52 @@ export function VehicleEditor({ request }: { request: { mode: 'create' | 'edit';
               <Toggle checked={v.walls} onChange={(walls) => set({ walls })} label="Closed body (walls)" hint="Off for flatbeds and open decks" />
             </div>
           </Section>
+
+          {dumpBody && (
+            <Section
+              title="Dump body"
+              right={
+                <span className="text-[11px] text-muted num">
+                  Struck capacity {formatMaterialVolume(dumpBody.capacityL, 'solid', sys, 2)} (level with the sides)
+                </span>
+              }
+            >
+              <div className="flex flex-col gap-3">
+                <p className="text-xs text-muted">
+                  The capacity follows the inside length × width × side height above. Heaping above the sides is over-dimension (ODOL); dense materials hit the payload long
+                  before the body looks full.
+                </p>
+                <div className="overflow-x-auto rounded-lg border border-line">
+                  <table className="w-full text-xs">
+                    <thead className="bg-canvas text-left text-muted">
+                      <tr>
+                        <th className="px-2 py-1.5 font-medium">Material</th>
+                        <th className="px-2 py-1.5 font-medium">Level-full weight</th>
+                        <th className="px-2 py-1.5 font-medium">Legal fill (empty truck)</th>
+                        <th className="px-2 py-1.5 font-medium">Limited by</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-line">
+                      {DUMP_REFERENCE.map((m) => {
+                        const fullKg = dumpBody.capacityL * m.densityKgPerL;
+                        const legal = errors.length ? null : maxLegalFill(v, [], dumpBody, { materialId: m.id, state: m.state, densityKgPerL: m.densityKgPerL });
+                        return (
+                          <tr key={m.id}>
+                            <td className="px-2 py-1.5 text-ink">{m.name}</td>
+                            <td className={`whitespace-nowrap px-2 py-1.5 font-mono num ${fullKg > v.payloadKg ? 'text-bad' : ''}`}>{formatMass(fullKg, sys)}</td>
+                            <td className="whitespace-nowrap px-2 py-1.5 font-mono num">
+                              {legal ? `${formatMaterialVolume(legal.litres, 'solid', sys, 2)} · ${formatPercent(legal.litres / dumpBody.capacityL)}` : '-'}
+                            </td>
+                            <td className="px-2 py-1.5 text-muted">{legal?.limitedBy ?? 'Fix the problems first'}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </Section>
+          )}
 
           {tank && (
             <Section

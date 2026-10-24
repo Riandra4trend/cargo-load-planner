@@ -1,4 +1,4 @@
-import { Lightbulb, MoreHorizontal, Pencil, Plus, Repeat, Trash2, Truck, Wrench, X } from 'lucide-react';
+import { Lightbulb, MoreHorizontal, Pencil, Plus, Repeat, Trash2, Wrench, X } from 'lucide-react';
 import { useState } from 'react';
 import { createVehicle, VEHICLE_PRESETS } from '../../domain/presets';
 import { formatDims, formatMass } from '../../domain/units';
@@ -6,9 +6,11 @@ import { proposeVehicles } from '../../packing';
 import { useEvaluation, useUnitSystem } from '../../state/hooks';
 import { useStore } from '../../state/store';
 import { Button } from '../common/Button';
+import { Modal } from '../common/Modal';
+import { bulkSummary } from './bulk';
 import { Menu, type MenuEntry } from './Menu';
+import { PresetList, PresetPopover } from './PresetPicker';
 import { HEALTH_DOT, HEALTH_LABEL, vehicleHealth } from './shellFormat';
-import { formatCargoLitres, tankCapacityL } from './tanker';
 
 const presetName = (id: string): string => VEHICLE_PRESETS.find((p) => p.id === id)?.name ?? id;
 
@@ -34,33 +36,39 @@ function applyProposal(presetIds: string[]): void {
   startOptimise();
 }
 
-function VehicleActions({ vehicleId, canRemove }: { vehicleId: string; canRemove: boolean }) {
+function VehicleActions({ vehicleId, presetId, canRemove }: { vehicleId: string; presetId: string; canRemove: boolean }) {
   const s = useStore.getState;
+  const [switching, setSwitching] = useState(false);
   const entries: MenuEntry[] = [
     { label: 'Edit…', icon: <Pencil />, onSelect: () => s().openDialog('vehicleEditor', { mode: 'edit', vehicleId }) },
-    { kind: 'separator' },
-    { kind: 'heading', label: 'Switch preset (re-packs)' },
-    ...VEHICLE_PRESETS.map<MenuEntry>((p) => ({
-      label: p.name,
-      icon: <Repeat />,
-      hint: p.region,
-      onSelect: () => {
-        s().switchVehiclePreset(vehicleId, p.id);
-        s().startOptimise({ vehicleIds: [vehicleId] });
-      },
-    })),
+    { label: 'Switch preset…', icon: <Repeat />, hint: 're-packs', onSelect: () => setSwitching(true) },
     { kind: 'separator' },
     { label: 'Remove', icon: <Trash2 />, danger: true, disabled: !canRemove, onSelect: () => s().removeVehicle(vehicleId) },
   ];
   return (
-    <Menu
-      label="Vehicle actions"
-      align="right"
-      width="w-64"
-      entries={entries}
-      triggerClassName="flex h-7 w-7 items-center justify-center rounded-md text-muted hover:bg-black/5 hover:text-ink"
-      trigger={<MoreHorizontal className="h-4 w-4" aria-hidden />}
-    />
+    <>
+      <Menu
+        label="Vehicle actions"
+        align="right"
+        width="w-56"
+        entries={entries}
+        triggerClassName="flex h-7 w-7 items-center justify-center rounded-md text-muted hover:bg-black/5 hover:text-ink"
+        trigger={<MoreHorizontal className="h-4 w-4" aria-hidden />}
+      />
+      <Modal open={switching} onClose={() => setSwitching(false)} title="Switch vehicle preset" icon={<Repeat />} width="max-w-md">
+        <p className="mb-2 text-xs text-muted">The vehicle's cargo is re-packed into the new preset.</p>
+        <div className="flex max-h-[60vh] flex-col rounded-xl border border-line">
+          <PresetList
+            currentId={presetId}
+            onPick={(id) => {
+              setSwitching(false);
+              s().switchVehiclePreset(vehicleId, id);
+              s().startOptimise({ vehicleIds: [vehicleId] });
+            }}
+          />
+        </div>
+      </Modal>
+    </>
   );
 }
 
@@ -80,17 +88,7 @@ export function VehicleList() {
     if (animation.mode !== 'idle' && animation.vehicleId !== id) setAnimation({ vehicleId: id, step: 0, playing: false });
   };
 
-  const addEntries: MenuEntry[] = [
-    { kind: 'heading', label: 'Presets' },
-    ...VEHICLE_PRESETS.map<MenuEntry>((p) => ({
-      label: p.name,
-      icon: <Truck />,
-      hint: p.region,
-      onSelect: () => activate(useStore.getState().addVehicle(p.id)),
-    })),
-    { kind: 'separator' },
-    { label: 'Custom vehicle…', icon: <Wrench />, onSelect: () => useStore.getState().openDialog('vehicleEditor', { mode: 'create' }) },
-  ];
+  const addVehicle = (presetId: string) => activate(useStore.getState().addVehicle(presetId));
 
   return (
     <div>
@@ -106,12 +104,14 @@ export function VehicleList() {
                   <span className={`h-2 w-2 shrink-0 rounded-full ${HEALTH_DOT[health]}`} title={HEALTH_LABEL[health]} aria-label={HEALTH_LABEL[health]} role="img" />
                   <span className="truncate text-[13px] font-semibold text-ink">{v.name}</span>
                 </span>
-                {v.tank ? (
+                {v.bulk ? (
                   <>
                     <span className="num mt-0.5 block truncate pl-3.5 text-[11px] text-ink-soft">
-                      {formatCargoLitres(tankCapacityL(v), sys)} · {v.tank.compartments.length} compartment{v.tank.compartments.length === 1 ? '' : 's'}
+                      {bulkSummary(v, sys)}
                     </span>
-                    <span className="num block truncate pl-3.5 text-[10.5px] text-muted/80">{formatDims(v.cargo, sys, { big: true })} barrel</span>
+                    <span className="num block truncate pl-3.5 text-[10.5px] text-muted/80">
+                      {formatDims(v.cargo, sys, { big: true })} {v.bulk.kind === 'tipper' ? 'inside' : 'barrel'}
+                    </span>
                   </>
                 ) : (
                   <span className="num mt-0.5 block truncate pl-3.5 text-[11px] text-muted">{formatDims(v.cargo, sys, { big: true })}</span>
@@ -120,22 +120,33 @@ export function VehicleList() {
                   {formatMass(ve.axle.cargoKg, sys)} of {formatMass(v.payloadKg, sys)} payload
                 </span>
               </button>
-              <VehicleActions vehicleId={v.id} canRemove={vehicles.length > 1} />
+              <VehicleActions vehicleId={v.id} presetId={v.presetId} canRemove={vehicles.length > 1} />
             </li>
           );
         })}
       </ul>
       <div className="mt-2 flex flex-wrap gap-1">
-        <Menu
+        <PresetPopover
           label="Add vehicle"
-          entries={addEntries}
-          width="w-64"
+          onPick={addVehicle}
           triggerClassName="inline-flex h-8 items-center gap-1.5 rounded-lg border border-line bg-card px-2.5 text-xs font-medium text-ink hover:bg-canvas"
           trigger={
             <>
               <Plus className="h-3.5 w-3.5" aria-hidden /> Add vehicle
             </>
           }
+          footer={(close) => (
+            <button
+              type="button"
+              onClick={() => {
+                close();
+                useStore.getState().openDialog('vehicleEditor', { mode: 'create' });
+              }}
+              className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-sm text-ink hover:bg-black/5 focus-visible:bg-black/5 focus-visible:outline-none"
+            >
+              <Wrench className="h-4 w-4 text-muted" aria-hidden /> Custom vehicle…
+            </button>
+          )}
         />
         <Button size="sm" variant="ghost" icon={<Lightbulb className="h-3.5 w-3.5" />} onClick={() => setProposal(proposeVehicles(useStore.getState().plan))} title="Propose the fewest vehicles that carry everything">
           Suggest

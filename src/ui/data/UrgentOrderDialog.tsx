@@ -2,9 +2,9 @@ import { Plus, Siren, Trash2, TriangleAlert } from 'lucide-react';
 import { useCallback, useState } from 'react';
 import { makeSpec } from '../../data/seed';
 import { TEMP_LABELS } from '../../domain/colors';
-import { isBulkLiquid, unitIdOf } from '../../domain/geometry';
+import { isBulk, unitIdOf } from '../../domain/geometry';
 import type { CargoLine, Dims, Id, ItemSpec, TempClass } from '../../domain/types';
-import { formatDims, formatLitres, formatWeight, itemLengthUnit, weightUnit } from '../../domain/units';
+import { formatDims, formatMaterialVolume, formatWeight, itemLengthUnit, weightUnit } from '../../domain/units';
 import { useStore } from '../../state/store';
 import { Button, IconButton } from '../common/Button';
 import { Field, inputClass, LengthInput, NumberInput, Select, TextInput, Toggle, WeightInput } from '../common/fields';
@@ -107,16 +107,16 @@ export function UrgentOrderDialog() {
       return { spec: specOf(r)!, quantity: r.quantity, contents: template?.contents, stopId, priority: 'urgent', addedAt };
     });
     const ids = addLines(lines);
-    // Bulk fills go straight into a free tanker compartment; the stable re-plan then keeps them there.
+    // Bulk fills go straight into a free tank compartment or dump body; the stable re-plan then keeps them there.
     let filled = 0;
     lines.forEach((l, i) => {
-      if (!isBulkLiquid(l.spec)) return;
+      if (!isBulk(l.spec)) return;
       const vehicleId = targetVehicleId(l.spec);
       if (vehicleId) filled += placeOnVehicle(Array.from({ length: l.quantity }, (_, k) => unitIdOf(ids[i], k)), vehicleId);
     });
     setHighlightLines(ids);
     closeDialog('urgent');
-    toast(`Urgent order: ${totalUnits} unit${totalUnits === 1 ? '' : 's'} added${filled ? ` (${filled} tanker fill${filled === 1 ? '' : 's'} assigned)` : ''}, re-planning…`, 'info');
+    toast(`Urgent order: ${totalUnits} unit${totalUnits === 1 ? '' : 's'} added${filled ? ` (${filled} bulk fill${filled === 1 ? '' : 's'} assigned)` : ''}, re-planning…`, 'info');
     startOptimise({ keepExisting: true });
   };
 
@@ -183,7 +183,7 @@ export function UrgentOrderDialog() {
                 </div>
                 {spec && (
                   <p className="mt-1.5 font-mono num text-xs text-muted">
-                    {spec.liquid ? `${formatLitres(spec.liquid.volumeL, sys, 0)} ${spec.liquid.name}${isBulkLiquid(spec) ? ' · tanker fill' : ''}` : formatDims(spec.dims, sys)} · {formatWeight(spec.weightKg, sys)} · {TEMP_LABELS[spec.temp]}
+                    {spec.material ? `${formatMaterialVolume(spec.material.volumeL, spec.material.state, sys)} ${spec.material.name}${isBulk(spec) ? (spec.material.state === 'solid' ? ' · dump-truck load' : ' · tanker fill') : ''}` : formatDims(spec.dims, sys)} · {formatWeight(spec.weightKg, sys)} · {TEMP_LABELS[spec.temp]}
                     {spec.hazmat ? ` · ${spec.hazmat.unNumber} (class ${spec.hazmat.hazClass})` : ''}
                   </p>
                 )}

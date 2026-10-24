@@ -8,6 +8,7 @@ import { useStore } from '../../state/store';
 import { Button, IconButton } from '../common/Button';
 import { ColorDot } from '../common/Chip';
 import { inputClass, NumberInput } from '../common/fields';
+import { countLabel } from './shellFormat';
 
 const DRAG_TYPE = 'application/x-stop-id';
 
@@ -254,7 +255,7 @@ export function StopList() {
                   {customer?.name ?? stop.name}
                 </span>
                 <span className="num block truncate text-[11px] text-muted" title={stop.name}>
-                  {t ? `${t.placed === t.units ? t.units : `${t.placed}/${t.units}`} units · ${formatMass(t.kg, sys)}` : 'no items'}
+                  {t ? `${t.placed === t.units ? countLabel(t.units, 'unit') : `${t.placed}/${countLabel(t.units, 'unit')}`} · ${formatMass(t.kg, sys)}` : 'no items'}
                   {(stop.distanceKm ?? 0) > 0 && ` · ${formatDistance(stop.distanceKm ?? 0, sys)}`}
                 </span>
               </span>

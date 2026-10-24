@@ -257,11 +257,24 @@ describe('proposeVehicles', () => {
     expect(proposeVehicles(createSeedPlan())).toEqual(['us-reefer-53']);
   });
 
-  it('picks the fewest, smallest vehicles for dry goods', () => {
+  it('picks the fewest, smallest vehicles for dry goods (no vehicles yet: every region is a candidate)', () => {
     const light = emptyPlan([], [line('a', pallet({ weightKg: 150, dims: { l: 1.2, w: 0.8, h: 1.0 } }), 3)]);
-    expect(proposeVehicles(light)).toEqual(['eu-van-35']);
+    // 3 EUR pallets, 450 kg: the 1 t Indonesian pick-up (2.45 × 1.6 m bed, 2 × 2 pallet spots) is the smallest preset.
+    expect(proposeVehicles(light)).toEqual(['id-pickup']);
     const heavy = emptyPlan([], [line('a', pallet({ weightKg: 900 }), 24)]);
     const fleet = proposeVehicles(heavy);
     expect(fleet.length).toBe(1);
+  });
+
+  it('keeps to the regions of the vehicles already in the plan, plus ISO containers', () => {
+    const us = emptyPlan(['us-dry-van-53'], [line('a', pallet({ weightKg: 150, dims: { l: 1.2, w: 0.8, h: 1.0 } }), 3)]);
+    const fleet = proposeVehicles(us);
+    expect(fleet.length).toBeGreaterThan(0);
+    const regionOf = new Map(VEHICLE_PRESETS.map((p) => [p.id, p.region]));
+    for (const id of fleet) expect(['US', 'INTL']).toContain(regionOf.get(id));
+    // A custom vehicle states no preference: every region again.
+    const custom = emptyPlan(['eu-van-35'], us.lines);
+    custom.vehicles[0].region = 'custom';
+    expect(proposeVehicles(custom)).toEqual(['id-pickup']);
   });
 });

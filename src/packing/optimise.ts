@@ -4,7 +4,7 @@
  * heavy-item placement, front gaps, zone sizes and (stable mode) released units. Pure and
  * synchronous; deterministic for a given seed and iteration count.
  */
-import { allowedOrientations, expandUnits, isBulkLiquid, orientedSize } from '../domain/geometry';
+import { allowedOrientations, expandUnits, isBulk, orientedSize } from '../domain/geometry';
 import type { Id, Placement, TempZone, Vehicle } from '../domain/types';
 import { planIndex } from '../rules/context';
 import { hardViolations } from '../rules/checkPlan';
@@ -12,7 +12,7 @@ import { hazmatIssue, usableHeight } from '../rules/geometry';
 import { withPacking } from './apply';
 import { buildProblem, capacityKg, decode, initialGenome, samePlacement, tightenZones, type Genome, type Layout, type Problem, type SortKey } from './construct';
 import { mulberry32 } from './random';
-import { assignTanks } from './tanks';
+import { assignBulk } from './bulk';
 import { isClean, scoreLayout, windowCentre, type Score } from './score';
 import type { OptimiseRequest, OptimiseResult } from './types';
 
@@ -38,8 +38,9 @@ function cloneGenome(g: Genome): Genome {
 }
 
 /**
- * Optimises the requested vehicles: bulk liquid fills are assigned to tanker compartments
- * (packing/tanks.ts), floor units are packed into the other vehicles. Tankers carry only bulk
+ * Optimises the requested vehicles: bulk fills are assigned to tanker compartments (liquids) and
+ * dump truck bodies (dry bulk) by packing/bulk.ts; floor units are packed into the other vehicles.
+ * Tankers and dump trucks carry only bulk
  * fills and bulk fills never go onto a floor.
  */
 export function optimise(req: OptimiseRequest, onProgress?: (fraction: number) => void): OptimiseResult {
@@ -48,8 +49,8 @@ export function optimise(req: OptimiseRequest, onProgress?: (fraction: number) =
   const { vehicles: byId } = planIndex(plan);
   const involved = new Set(req.vehicleIds);
   const vehicles = req.vehicleIds.map((id) => byId.get(id)).filter((v): v is Vehicle => !!v);
-  const tankers = vehicles.filter((v) => v.tank);
-  const floors = vehicles.filter((v) => !v.tank);
+  const carriers = vehicles.filter((v) => v.bulk);
+  const floors = vehicles.filter((v) => !v.bulk);
   const requested = req.unitIds ? new Set(req.unitIds) : null;
   const considered = expandUnits(plan).filter((u) => {
     const p = plan.placements[u.id];
@@ -57,18 +58,18 @@ export function optimise(req: OptimiseRequest, onProgress?: (fraction: number) =
   });
   const movable = considered.filter((u) => !plan.placements[u.id]?.pinned);
   const movableIds = new Set(movable.map((u) => u.id));
-  const bulk = movable.filter((u) => isBulkLiquid(u.spec));
-  const floorUnits = movable.filter((u) => !isBulkLiquid(u.spec));
+  const bulk = movable.filter((u) => isBulk(u.spec));
+  const floorUnits = movable.filter((u) => !isBulk(u.spec));
 
   const result: OptimiseResult = { placements: {}, zones: {}, sliders: {}, unplaced: [], moved: 0, score: 0, iterations: 0, ms: 0 };
-  if (tankers.length || bulk.length) {
+  if (carriers.length || bulk.length) {
     const fixedIds = new Set(Object.values(plan.placements).flatMap((p) => (involved.has(p.vehicleId) && !movableIds.has(p.unitId) ? [p.unitId] : [])));
-    const tanks = assignTanks(plan, tankers, bulk, fixedIds, { keepExisting: req.keepExisting, maxIterations: req.maxIterations, deadline: t0 + req.timeBudgetMs });
-    Object.assign(result.placements, tanks.placements);
-    result.unplaced.push(...tanks.unplaced);
-    result.moved += tanks.moved;
-    result.score += tanks.score;
-    result.iterations += tanks.iterations;
+    const fillsResult = assignBulk(plan, carriers, bulk, fixedIds, { keepExisting: req.keepExisting, maxIterations: req.maxIterations, deadline: t0 + req.timeBudgetMs });
+    Object.assign(result.placements, fillsResult.placements);
+    result.unplaced.push(...fillsResult.unplaced);
+    result.moved += fillsResult.moved;
+    result.score += fillsResult.score;
+    result.iterations += fillsResult.iterations;
   }
   if (floorUnits.length && floors.length) {
     const boxes = packFloors(
@@ -84,7 +85,7 @@ export function optimise(req: OptimiseRequest, onProgress?: (fraction: number) =
     result.iterations += boxes.iterations;
   } else {
     for (const u of floorUnits) {
-      result.unplaced.push({ unitId: u.id, reason: tankers.length ? 'A tanker only carries bulk liquid' : 'No vehicle selected' });
+      result.unplaced.push({ unitId: u.id, reason: !carriers.length ? 'No vehicle selected' : carriers.every((v) => v.bulk?.kind === 'tank') ? 'A tanker only carries bulk liquid' : carriers.every((v) => v.bulk?.kind === 'tipper') ? 'A dump truck only carries bulk material' : 'Tankers and dump trucks carry only bulk material' });
       if (plan.placements[u.id]) result.moved++;
     }
   }
@@ -97,7 +98,7 @@ export function optimise(req: OptimiseRequest, onProgress?: (fraction: number) =
   return result;
 }
 
-/** Floor packing of `req.unitIds` (non-bulk units) into `req.vehicleIds` (vehicles without a tank). */
+/** Floor packing of `req.unitIds` (non-bulk units) into `req.vehicleIds` (vehicles without a tank or dump body). */
 function packFloors(req: OptimiseRequest, onProgress?: (fraction: number) => void): OptimiseResult {
   const t0 = performance.now();
   const budget = Math.max(0, req.timeBudgetMs);

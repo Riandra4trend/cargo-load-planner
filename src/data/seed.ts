@@ -1,7 +1,7 @@
 import { stopColor } from '../domain/colors';
 import { unitIdOf } from '../domain/geometry';
 import { uid } from '../domain/ids';
-import { liquidDef } from '../domain/liquids';
+import { materialDef } from '../domain/materials';
 import { createVehicle, sliderPositions } from '../domain/presets';
 import { defaultSettings } from '../domain/settings';
 import type { CargoLine, Customer, ItemSpec, Orientation, Placement, Plan, Stop } from '../domain/types';
@@ -29,23 +29,24 @@ export function makeSpec(partial: Partial<ItemSpec> & Pick<ItemSpec, 'name' | 'd
 }
 
 /**
- * One tanker compartment fill of a library liquid: weight = volume × density, with the liquid's hazmat
- * entry, food flag and temperature class. Dimensions are nominal (bulk fills have no box).
+ * One loose fill of a library material (a tank compartment of liquid or a tipper body of dry bulk):
+ * weight = volume × density, with the material's hazmat entry, food flag and temperature class.
+ * Dimensions are nominal (bulk fills have no box).
  */
-export function makeBulkLiquidSpec(liquidId: string, volumeL: number, partial: Partial<ItemSpec> = {}): ItemSpec {
-  const def = liquidDef(liquidId);
-  if (!def) throw new Error(`Unknown liquid: ${liquidId}`);
+export function makeBulkSpec(materialId: string, volumeL: number, partial: Partial<ItemSpec> = {}): ItemSpec {
+  const def = materialDef(materialId);
+  if (!def) throw new Error(`Unknown material: ${materialId}`);
   return makeSpec({
     name: def.name,
-    category: 'Bulk liquid',
-    packaging: 'bulk-liquid',
+    category: def.state === 'liquid' ? 'Bulk liquid' : 'Dry bulk',
+    packaging: 'bulk',
     dims: { l: 1, w: 1, h: 1 },
     weightKg: volumeL * def.densityKgPerL,
     rotation: 'none',
     temp: def.temp,
     isFood: def.isFood,
     hazmat: def.hazmat ? { ...def.hazmat } : undefined,
-    liquid: { liquidId, name: def.name, densityKgPerL: def.densityKgPerL, volumeL },
+    material: { materialId, name: def.name, state: def.state, densityKgPerL: def.densityKgPerL, volumeL },
     ...partial,
   });
 }
@@ -284,7 +285,7 @@ export function createTankerSeedPlan(): Plan {
   vehicle.name = 'Truck 1 · Fuel tanker 32,000 L';
   const lines: CargoLine[] = TANKER_LOADS.map(([key, liquidId, litres, stop]) => ({
     id: `line-${key}`,
-    spec: makeBulkLiquidSpec(liquidId, litres),
+    spec: makeBulkSpec(liquidId, litres),
     quantity: 1,
     contents: `${litres.toLocaleString('en-US')} L`,
     stopId: stops[stop - 1].id,
@@ -293,7 +294,7 @@ export function createTankerSeedPlan(): Plan {
   const placements: Record<string, Placement> = {};
   for (const [key, , , , compartmentId] of TANKER_LOADS) {
     const unitId = unitIdOf(`line-${key}`, 0);
-    const c = vehicle.tank!.compartments.find((x) => x.id === compartmentId)!;
+    const c = vehicle.bulk!.compartments.find((x) => x.id === compartmentId)!;
     placements[unitId] = { unitId, vehicleId: vehicle.id, compartmentId, pos: { x: c.fromX, y: 0, z: 0 }, orient: 0 };
   }
   return {
@@ -305,6 +306,56 @@ export function createTankerSeedPlan(): Plan {
     stops,
     lines,
     vehicles: [vehicle],
+    placements,
+    settings: defaultSettings(),
+  };
+}
+
+const TIPPER_SITES = [
+  { name: 'Housing site Bekasi', customer: 'PT Griya Bekasi', distanceKm: 22 },
+  { name: 'Road works Cikarang', customer: 'Dinas PU Cikarang', distanceKm: 15 },
+];
+
+/** [line key, material, litres, stop, vehicle preset] */
+const TIPPER_LOADS: [string, string, number, number, string][] = [
+  ['sand', 'sand-wet', 10_000, 1, 'id-dump-tronton'],
+  ['gravel', 'gravel', 2500, 2, 'id-dump-cdd'],
+];
+
+/**
+ * Sand and gravel by dump truck. The tronton carries 10 m³ of wet sand, 19 t on a 15 t payload: the
+ * everyday overloading the axle checks expose (about 7.9 m³ is legal). The CDD's 2.5 m³ of gravel is legal.
+ */
+export function createTipperSeedPlan(): Plan {
+  const customers: Customer[] = TIPPER_SITES.map((s, i) => ({ id: `cust-${i + 1}`, name: s.customer, color: stopColor(i + 1) }));
+  const stops: Stop[] = TIPPER_SITES.map((s, i) => ({ id: `stop-${i + 1}`, name: s.name, customerId: customers[i].id, sequence: i + 1, distanceKm: s.distanceKm }));
+  const vehicles = TIPPER_LOADS.map(([, , , , presetId], i) => {
+    const v = createVehicle(presetId, `veh-${i + 1}`);
+    v.name = `Truck ${i + 1} · ${v.name}`;
+    return v;
+  });
+  const lines: CargoLine[] = TIPPER_LOADS.map(([key, materialId, litres, stop]) => ({
+    id: `line-${key}`,
+    spec: makeBulkSpec(materialId, litres),
+    quantity: 1,
+    contents: `${(litres / 1000).toLocaleString('en-US')} m³`,
+    stopId: stops[stop - 1].id,
+    priority: 'normal',
+  }));
+  const placements: Record<string, Placement> = {};
+  TIPPER_LOADS.forEach(([key], i) => {
+    const unitId = unitIdOf(`line-${key}`, 0);
+    placements[unitId] = { unitId, vehicleId: vehicles[i].id, compartmentId: 'body', pos: { x: 0, y: 0, z: 0 }, orient: 0 };
+  });
+  return {
+    version: 1,
+    id: uid('plan'),
+    name: 'Material run M-03 · sand & gravel',
+    meta: { date: new Date().toISOString().slice(0, 10), time: '06:00', dock: 'Quarry gate', route: 'M-03', returnKm: 30, driver: '', notes: '' },
+    customers,
+    stops,
+    lines,
+    vehicles,
     placements,
     settings: defaultSettings(),
   };

@@ -12,7 +12,7 @@ const ICON: Record<Severity, typeof Info> = { error: OctagonAlert, warning: Tria
 const TONE: Record<Severity, string> = { error: 'text-bad', warning: 'text-warn', info: 'text-info' };
 /** Kind-specific icon and short title for tanker checks. */
 const KIND_INFO: Partial<Record<ViolationKind, { icon: typeof Info; title: string }>> = {
-  tank: { icon: Container, title: 'Tank rule' },
+  bulk: { icon: Container, title: 'Bulk rule' },
   surge: { icon: Waves, title: 'Liquid surge' },
 };
 

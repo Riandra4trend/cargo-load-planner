@@ -1,4 +1,4 @@
-import type { Dims, UnitSystem } from './types';
+import type { Dims, MaterialState, UnitSystem } from './types';
 
 /** Exact conversion factors. */
 export const M_PER_IN = 0.0254;
@@ -117,9 +117,28 @@ export function formatLitres(litres: number, sys: UnitSystem, digits = 1): strin
   return litreParts(litres, sys, digits).join(' ');
 }
 
-/** Liquid density: metric "0.84 kg/L", imperial "7.01 lb/gal". */
-export function formatLiquidDensity(kgPerL: number, sys: UnitSystem): string {
-  return sys === 'metric' ? `${formatNumber(kgPerL, 3)} kg/L` : `${formatNumber(kgToLb(kgPerL) * L_PER_US_GAL, 2)} lb/gal`;
+/** US cubic yard, litres (exact). */
+export const L_PER_CU_YD = 764.554857984;
+
+/**
+ * Material volume split for KPI cards: liquids in L or US gal, dry bulk in m³ or cubic yards. Without
+ * `digits`, values of 100 or more show whole numbers and smaller ones one decimal.
+ */
+export function materialVolumeParts(litres: number, state: MaterialState, sys: UnitSystem, digits?: number): [string, string] {
+  const [value, unit] =
+    state === 'liquid' ? (sys === 'metric' ? [litres, 'L'] : [litres / L_PER_US_GAL, 'gal']) : sys === 'metric' ? [litres / 1000, 'm³'] : [litres / L_PER_CU_YD, 'yd³'];
+  return [formatNumber(value, digits ?? (Math.abs(value) >= 100 ? 0 : 1)), unit];
+}
+
+/** "7,700 L" / "2,034 gal" for liquids, "9.5 m³" / "12.4 yd³" for dry bulk. */
+export function formatMaterialVolume(litres: number, state: MaterialState, sys: UnitSystem, digits?: number): string {
+  return materialVolumeParts(litres, state, sys, digits).join(' ');
+}
+
+/** Density: liquids "0.840 kg/L" / "7.01 lb/gal", dry bulk "1.60 t/m³" / "99.9 lb/ft³". */
+export function formatMaterialDensity(kgPerL: number, state: MaterialState, sys: UnitSystem): string {
+  if (state === 'liquid') return sys === 'metric' ? `${formatNumber(kgPerL, 3)} kg/L` : `${formatNumber(kgToLb(kgPerL) * L_PER_US_GAL, 2)} lb/gal`;
+  return sys === 'metric' ? `${formatNumber(kgPerL, 2)} t/m³` : `${formatNumber(kgToLb(kgPerL * 1000) * M_PER_FT ** 3, 1)} lb/ft³`;
 }
 
 /** Driving consumption: metric "38.4 L/100 km", imperial "6.1 mpg" (US gallons). */

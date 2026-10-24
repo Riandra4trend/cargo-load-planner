@@ -49,8 +49,8 @@ export interface DialogState {
   plans?: true;
   share?: true;
   report?: true;
-  /** Liquid weight reference (densities and a volume → weight calculator). */
-  liquids?: true;
+  /** Material weights reference (liquid and dry-bulk densities with a volume → weight calculator). */
+  materials?: true;
 }
 
 export interface DragState {
@@ -172,7 +172,7 @@ export interface StoreState {
   rotateUnit: (unitId: Id) => boolean;
   unplaceUnits: (unitIds: Id[]) => void;
   togglePin: (unitId: Id) => void;
-  /** Puts a bulk liquid fill into a tanker compartment (one fill per compartment). */
+  /** Puts a bulk fill into a tank compartment or tipper body (one fill per compartment). */
   assignCompartment: (unitId: Id, vehicleId: Id, compartmentId: Id) => void;
   applyFix: (action: FixAction) => void;
 
@@ -459,14 +459,14 @@ export const useStore = create<StoreState>()((set, get) => {
       }),
     assignCompartment: (unitId, vehicleId, compartmentId) =>
       commit('Fill compartment', (d) => {
-        const tank = d.vehicles.find((v) => v.id === vehicleId)?.tank;
-        const c = tank?.compartments.find((x) => x.id === compartmentId);
-        if (!tank || !c) return;
+        const bulk = d.vehicles.find((v) => v.id === vehicleId)?.bulk;
+        const c = bulk?.compartments.find((x) => x.id === compartmentId);
+        if (!bulk || !c) return;
         const prev = d.placements[unitId];
-        // A fill already in the target swaps into the moved fill's old compartment on this tanker, else it is unloaded.
+        // A fill already in the target swaps into the moved fill's old compartment on this vehicle, else it is unloaded.
         const occupant = Object.values(d.placements).find((p) => p.unitId !== unitId && p.vehicleId === vehicleId && p.compartmentId === compartmentId);
         if (occupant) {
-          const back = prev?.vehicleId === vehicleId ? tank.compartments.find((x) => x.id === prev.compartmentId) : undefined;
+          const back = prev?.vehicleId === vehicleId ? bulk.compartments.find((x) => x.id === prev.compartmentId) : undefined;
           if (back) d.placements[occupant.unitId] = { ...occupant, compartmentId: back.id, pos: { x: back.fromX, y: 0, z: 0 } };
           else delete d.placements[occupant.unitId];
         }

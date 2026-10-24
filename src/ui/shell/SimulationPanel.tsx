@@ -7,7 +7,7 @@ import { Button, IconButton } from '../common/Button';
 import { ColorDot } from '../common/Chip';
 import { SegmentedControl } from '../common/fields';
 import { stopColorsBySeq } from './shellFormat';
-import { dischargeInstruction, fillInstruction } from './tanker';
+import { dischargeInstruction, fillInstruction } from './bulk';
 import { useLoadingSequence } from './useShownState';
 
 const SPEEDS = ['0.5', '1', '2', '4'] as const;
@@ -68,7 +68,7 @@ function LoadSimulation({ anim }: { anim: AnimationState }) {
         <span className="num font-mono text-ink">
           {loaded} / {steps.length}
         </span>
-        <span className="text-muted">{vehicle?.tank ? 'fills loaded' : 'units loaded'}</span>
+        <span className="text-muted">{vehicle?.bulk ? 'fills loaded' : 'units loaded'}</span>
         <div className="h-1.5 flex-1 rounded-full bg-black/[0.06]">
           <div className="h-full rounded-full bg-accent transition-[width]" style={{ width: `${steps.length ? (loaded / steps.length) * 100 : 0}%` }} />
         </div>
@@ -126,10 +126,11 @@ function UnloadSimulation({ anim }: { anim: AnimationState }) {
   const prev = stages[stageIndex - 1];
   const leaving = prev ? prev.unitIds.length - st.unitIds.length : 0;
   const colors = stopColorsBySeq(plan);
-  const tanker = !!ve.vehicle.tank;
-  const noun = tanker ? 'fill' : 'unit';
+  const bulkVehicle = !!ve.vehicle.bulk;
+  const tipper = ve.vehicle.bulk?.kind === 'tipper';
+  const noun = bulkVehicle ? 'fill' : 'unit';
   const aboardNow = new Set(st.unitIds);
-  const discharged = tanker && prev ? prev.unitIds.filter((id) => !aboardNow.has(id)).map((id) => evaluation.unitById.get(id)).filter((u) => u !== undefined) : [];
+  const discharged = bulkVehicle && prev ? prev.unitIds.filter((id) => !aboardNow.has(id)).map((id) => evaluation.unitById.get(id)).filter((u) => u !== undefined) : [];
   return (
     <>
       <div role="tablist" aria-label="Unloading stage" className="mb-2 flex flex-wrap gap-1">
@@ -158,7 +159,7 @@ function UnloadSimulation({ anim }: { anim: AnimationState }) {
         ) : (
           <>
             {stopLabel(plan, st.stage)}: {leaving} {noun}
-            {leaving === 1 ? '' : 's'} {tanker ? 'discharged' : 'unloaded'}, {st.unitIds.length} still aboard.
+            {leaving === 1 ? '' : 's'} {tipper ? 'tipped' : bulkVehicle ? 'discharged' : 'unloaded'}, {st.unitIds.length} still aboard.
           </>
         )}{' '}
         The panels below show this stage.

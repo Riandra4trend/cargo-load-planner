@@ -1,7 +1,7 @@
-import { compartmentOf, isBulkLiquid, placementBox, placementCog } from '../domain/geometry';
+import { compartmentOf, isBulk, placementBox, placementCog } from '../domain/geometry';
 import type { CargoUnit, Placement, Plan, Vehicle } from '../domain/types';
 import { planIndex, vehicleArrangement } from './context';
-import { fillIssueReason, fillIssues, fillName, fillsOf, pairIssue, pairIssueReason, withCompartment, type FillRef } from './tank';
+import { fillIssueReason, fillIssues, fillName, fillsOf, pairIssue, pairIssueReason, stateOf, withCompartment, type FillRef } from './bulk';
 
 export interface MoveCheck {
   ok: boolean;
@@ -13,7 +13,7 @@ export interface MoveCheck {
  * Hard-constraint check for placing one unit at `candidate`, against the other units in that
  * vehicle (bounds, ceiling, door, overlap, support, stacking incl. load and layers on its new
  * supporters, fragile, rotation, temperature, hazmat). Also rejects moving a unit that currently
- * carries other units. Bulk liquid fills are checked against the tanker compartments instead,
+ * carries other units. Bulk fills are checked against the tank compartments / dump body instead,
  * with the store's swap semantics when the target compartment is occupied.
  */
 export function validateMove(plan: Plan, candidate: Placement): MoveCheck {
@@ -22,8 +22,8 @@ export function validateMove(plan: Plan, candidate: Placement): MoveCheck {
   const vehicle = vehicles.get(candidate.vehicleId);
   if (!unit) return { ok: false, reasons: ['Unknown unit'] };
   if (!vehicle) return { ok: false, reasons: ['Unknown vehicle'] };
-  if (isBulkLiquid(unit.spec)) return validateFill(plan, unit, vehicle, candidate);
-  if (vehicle.tank) return { ok: false, reasons: ['A tanker only carries bulk liquid'] };
+  if (isBulk(unit.spec)) return validateFill(plan, unit, vehicle, candidate);
+  if (vehicle.bulk) return { ok: false, reasons: [vehicle.bulk.kind === 'tipper' ? 'A dump truck only carries bulk material' : 'A tanker only carries bulk liquid'] };
   const reasons: string[] = [];
   const current = plan.placements[unit.id];
   const currentVehicle = current ? vehicles.get(current.vehicleId) : undefined;
@@ -42,7 +42,7 @@ export function validateMove(plan: Plan, candidate: Placement): MoveCheck {
 
 function validateFill(plan: Plan, unit: CargoUnit, vehicle: Vehicle, candidate: Placement): MoveCheck {
   const c = compartmentOf(vehicle, candidate.compartmentId);
-  if (!vehicle.tank || !c) return { ok: false, reasons: ['Bulk liquid goes into a tanker compartment'] };
+  if (!vehicle.bulk || !c) return { ok: false, reasons: [stateOf(unit.spec) === 'solid' ? 'Dry bulk goes into a dump truck body' : 'Bulk liquid goes into a tanker compartment'] };
   const { units, labels } = planIndex(plan);
   const sys = plan.settings.units;
   const fills = fillsOf(vehicle, withCompartment(plan.placements, unit.id, vehicle, c), units, labels);

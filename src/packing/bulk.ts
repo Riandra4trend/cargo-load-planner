@@ -1,16 +1,16 @@
 /**
- * Tanker compartment assignment for bulk liquid fills. Exhaustive (depth-first over feasible
- * compartments, pruned by the hard tank rules) for up to 8 fills, otherwise greedy plus pairwise
+ * Compartment assignment for bulk fills: liquids into tanker compartments, dry bulk into dump
+ * truck bodies. Exhaustive (depth-first over feasible compartments, pruned by the hard bulk rules) for up to 8 fills, otherwise greedy plus pairwise
  * moves and swaps. Lexicographic objective: placed fills (urgent count triple); axle, minimum-share,
  * gross and payload excess at every stage; surge; moved fills (stable mode); worst axle utilisation.
  */
-import { bulkCog, compartmentOf, isBulkLiquid } from '../domain/geometry';
-import { needsPressureTank } from '../domain/liquids';
+import { bulkCog, compartmentOf, isBulk } from '../domain/geometry';
+import { needsPressureTank } from '../domain/materials';
 import { hazmatRule } from '../domain/settings';
-import type { CargoUnit, Id, Placement, Plan, TankCompartment, Vehicle } from '../domain/types';
+import type { CargoUnit, Id, Placement, Plan, Compartment, Vehicle } from '../domain/types';
 import { computeStages, type StagePoint } from '../physics';
 import { planIndex } from '../rules/context';
-import { fillIssues, pairIssue, stageExcessKg, surges, worstUtilisation, type FillRef } from '../rules/tank';
+import { bodyFor, fillIssues, maxFillL, litresOf, pairIssue, stageExcessKg, surges, worstUtilisation, type FillRef } from '../rules/bulk';
 
 /** Fills searched exhaustively; above this, greedy plus local search. */
 const EXHAUSTIVE_MAX = 8;
@@ -19,7 +19,7 @@ const LEAF_CAP = 60_000;
 
 interface Slot {
   ti: number;
-  c: TankCompartment;
+  c: Compartment;
   index: number;
 }
 
@@ -31,10 +31,10 @@ interface Score {
   worst: number;
 }
 
-export interface TankResult {
+export interface BulkResult {
   placements: Record<Id, Placement>;
   unplaced: { unitId: Id; reason: string }[];
-  /** Fills whose tanker or compartment changed. */
+  /** Fills whose vehicle or compartment changed. */
   moved: number;
   score: number;
   iterations: number;
@@ -51,41 +51,41 @@ function better(a: Score, b: Score): boolean {
 const scalar = (s: Score): number => Math.round(s.unplaced * 100_000 + s.excess * 100 + s.surge * 1000 + s.moved * 500 + s.worst * 100);
 
 /**
- * Assigns `fills` (movable bulk units) to the compartments of `tankers`. Placements in those
- * tankers that are pinned or outside the request (`fixedIds`) stay where they are.
+ * Assigns `fills` (movable bulk units) to the compartments of `carriers` (tankers and dump
+ * trucks). Placements in those vehicles that are pinned or outside the request (`fixedIds`) stay where they are.
  */
-export function assignTanks(
+export function assignBulk(
   plan: Plan,
-  tankers: readonly Vehicle[],
+  carriers: readonly Vehicle[],
   fills: readonly CargoUnit[],
   fixedIds: ReadonlySet<Id>,
   opts: { keepExisting: boolean; maxIterations?: number; deadline: number },
-): TankResult {
+): BulkResult {
   const s = plan.settings;
   const { units, labels } = planIndex(plan);
-  const tIndex = new Map(tankers.map((v, i) => [v.id, i]));
+  const tIndex = new Map(carriers.map((v, i) => [v.id, i]));
 
   // Fixed fills occupy their compartments.
-  const fixed: FillRef[][] = tankers.map(() => []);
+  const fixed: FillRef[][] = carriers.map(() => []);
   const fixedPlacements: Placement[] = [];
-  const fixedPoints: StagePoint[][] = tankers.map(() => []);
+  const fixedPoints: StagePoint[][] = carriers.map(() => []);
   for (const p of Object.values(plan.placements)) {
     const ti = tIndex.get(p.vehicleId);
     if (ti === undefined || !fixedIds.has(p.unitId)) continue;
     fixedPlacements.push(p);
-    const v = tankers[ti];
+    const v = carriers[ti];
     const c = compartmentOf(v, p.compartmentId);
     const u = units.get(p.unitId);
-    if (!c || !u || !isBulkLiquid(u.spec)) continue;
-    fixed[ti].push({ id: p.unitId, label: labels.get(p.unitId) ?? u.spec.name, spec: u.spec, c, index: v.tank!.compartments.indexOf(c) });
+    if (!c || !u || !isBulk(u.spec)) continue;
+    fixed[ti].push({ id: p.unitId, label: labels.get(p.unitId) ?? u.spec.name, spec: u.spec, c, index: v.bulk!.compartments.indexOf(c) });
     const g = bulkCog(v, c, u.spec);
     fixedPoints[ti].push({ id: p.unitId, x: g.x, y: g.y, z: g.z, kg: u.spec.weightKg, stopSeq: u.stopSeq });
   }
-  const fixedSurge = fixed.reduce((sum, list, ti) => sum + list.filter((f) => surges(tankers[ti], f.c, f.spec)).length, 0);
+  const fixedSurge = fixed.reduce((sum, list, ti) => sum + list.filter((f) => surges(carriers[ti], f.c, f.spec)).length, 0);
 
   const slots: Slot[] = [];
-  tankers.forEach((v, ti) => {
-    v.tank!.compartments.forEach((c, index) => {
+  carriers.forEach((v, ti) => {
+    v.bulk!.compartments.forEach((c, index) => {
       if (!fixed[ti].some((f) => f.c.id === c.id)) slots.push({ ti, c, index });
     });
   });
@@ -95,7 +95,7 @@ export function assignTanks(
   // Feasible slots per fill: compartment checks and pairs with fixed fills.
   const feasible: number[][] = fills.map((u, i) =>
     slots.flatMap((slot, k) => {
-      const v = tankers[slot.ti];
+      const v = carriers[slot.ti];
       if (fillIssues(v, slot.c, u.spec).length) return [];
       const r = ref(i, slot);
       return fixed[slot.ti].some((f) => pairIssue(v, s, r, f)) ? [] : [k];
@@ -104,11 +104,11 @@ export function assignTanks(
   const compatible = (i: number, k: number, j: number, l: number): boolean => {
     const a = slots[k];
     const b = slots[l];
-    return a.ti !== b.ti || !pairIssue(tankers[a.ti], s, ref(i, a), ref(j, b));
+    return a.ti !== b.ti || !pairIssue(carriers[a.ti], s, ref(i, a), ref(j, b));
   };
   const existingSlot = fills.map((u) => {
     const p = plan.placements[u.id];
-    return p ? slots.findIndex((slot) => tankers[slot.ti].id === p.vehicleId && slot.c.id === p.compartmentId) : -1;
+    return p ? slots.findIndex((slot) => carriers[slot.ti].id === p.vehicleId && slot.c.id === p.compartmentId) : -1;
   });
 
   let iterations = 0;
@@ -130,7 +130,7 @@ export function assignTanks(
         return;
       }
       const slot = slots[k];
-      const v = tankers[slot.ti];
+      const v = carriers[slot.ti];
       const g = bulkCog(v, slot.c, u.spec);
       points[slot.ti].push({ id: u.id, x: g.x, y: g.y, z: g.z, kg: u.spec.weightKg, stopSeq: u.stopSeq });
       if (surges(v, slot.c, u.spec)) surge++;
@@ -138,7 +138,7 @@ export function assignTanks(
     });
     let excess = 0;
     let worst = 0;
-    tankers.forEach((v, ti) => {
+    carriers.forEach((v, ti) => {
       if (!points[ti].length) return;
       const stages = computeStages(v, plan.stops, points[ti], s.nearLimit);
       excess += stageExcessKg(v, stages) + Math.max(0, stages[0].axle.cargoKg - v.payloadKg - 0.5);
@@ -178,7 +178,7 @@ export function assignTanks(
   }
 
   if (n <= EXHAUSTIVE_MAX) {
-    const order = fills.map((_, i) => i).sort((a, b) => feasible[a].length - feasible[b].length || (fills[b].spec.liquid?.volumeL ?? 0) - (fills[a].spec.liquid?.volumeL ?? 0) || a - b);
+    const order = fills.map((_, i) => i).sort((a, b) => feasible[a].length - feasible[b].length || (fills[b].spec.material?.volumeL ?? 0) - (fills[a].spec.material?.volumeL ?? 0) || a - b);
     const assignment = fills.map(() => -1);
     const dfs = (d: number, unplaced: number) => {
       if (!hasTime() || unplaced > bestScore.unplaced) return;
@@ -205,7 +205,7 @@ export function assignTanks(
   /** Fills without a slot, largest first, each into the slot with the best partial score. */
   function greedy(start: number[]): number[] {
     const assignment = [...start];
-    const order = fills.map((_, i) => i).filter((i) => assignment[i] < 0).sort((a, b) => (fills[b].spec.liquid?.volumeL ?? 0) - (fills[a].spec.liquid?.volumeL ?? 0) || a - b);
+    const order = fills.map((_, i) => i).filter((i) => assignment[i] < 0).sort((a, b) => (fills[b].spec.material?.volumeL ?? 0) - (fills[a].spec.material?.volumeL ?? 0) || a - b);
     for (const i of order) {
       let bestK = -1;
       let bestSc: Score | null = null;
@@ -251,10 +251,10 @@ export function assignTanks(
     }
   }
 
-  function finish(): TankResult {
+  function finish(): BulkResult {
     const placements: Record<Id, Placement> = {};
     for (const p of fixedPlacements) placements[p.unitId] = p;
-    const unplaced: TankResult['unplaced'] = [];
+    const unplaced: BulkResult['unplaced'] = [];
     const aboard = fixed.map((list) => [...list]);
     best.forEach((k, i) => {
       if (k >= 0) aboard[slots[k].ti].push(ref(i, slots[k]));
@@ -264,12 +264,12 @@ export function assignTanks(
       const u = fills[i];
       const prev = plan.placements[u.id];
       if (k < 0) {
-        unplaced.push({ unitId: u.id, reason: unplacedReason(plan, tankers, u, aboard) });
+        unplaced.push({ unitId: u.id, reason: unplacedReason(plan, carriers, u, aboard) });
         if (prev) moved++;
         return;
       }
       const slot = slots[k];
-      const v = tankers[slot.ti];
+      const v = carriers[slot.ti];
       placements[u.id] = { unitId: u.id, vehicleId: v.id, compartmentId: slot.c.id, pos: { x: slot.c.fromX, y: 0, z: 0 }, orient: 0 };
       if (prev && (prev.vehicleId !== v.id || prev.compartmentId !== slot.c.id)) moved++;
     });
@@ -277,22 +277,26 @@ export function assignTanks(
   }
 }
 
-/** Why a fill found no compartment (`aboard` = fills per tanker in the final assignment). */
-function unplacedReason(plan: Plan, tankers: readonly Vehicle[], u: CargoUnit, aboard: readonly FillRef[][]): string {
-  if (!tankers.length) return 'Needs a tanker';
-  let cands = tankers.map((_, i) => i);
+/** Why a fill found no compartment (`aboard` = fills per vehicle in the final assignment). */
+function unplacedReason(plan: Plan, carriers: readonly Vehicle[], u: CargoUnit, aboard: readonly FillRef[][]): string {
+  const solid = bodyFor(u.spec) === 'tipper';
+  let cands = carriers.map((_, i) => i).filter((i) => carriers[i].bulk!.kind === bodyFor(u.spec));
+  if (!cands.length) return solid ? 'Needs a dump truck' : 'Needs a tanker';
   const keep = (pred: (v: Vehicle) => boolean, reason: string): string | null => {
-    const next = cands.filter((i) => pred(tankers[i]));
+    const next = cands.filter((i) => pred(carriers[i]));
     if (!next.length) return reason;
     cands = next;
     return null;
   };
-  const pressure = needsPressureTank(u.spec.liquid?.liquidId ?? '');
-  const reason =
-    keep((v) => v.tank!.pressurised === pressure, pressure ? 'Needs a pressurised tank' : 'A pressurised tank only carries liquefied gas') ??
-    (u.spec.isFood ? keep((v) => v.tank!.foodGrade, 'Needs a food-grade tank') : null) ??
-    (u.spec.temp !== 'ambient' ? keep((v) => v.tank!.insulated, 'Needs an insulated tank') : null) ??
-    keep((v) => v.tank!.compartments.some((c) => !fillIssues(v, c, u.spec).length), 'No free compartment large enough');
+  const tooSmall = solid ? 'No dump body large enough' : 'No free compartment large enough';
+  const largeEnough = (v: Vehicle) => v.bulk!.compartments.some((c) => litresOf(u.spec) <= maxFillL(u.spec, c.capacityL) + 1e-6);
+  const pressure = needsPressureTank(u.spec.material?.materialId ?? '');
+  const reason = solid
+    ? keep(largeEnough, tooSmall)
+    : (keep((v) => v.bulk!.pressurised === pressure, pressure ? 'Needs a pressurised tank' : 'A pressurised tank only carries liquefied gas') ??
+      (u.spec.isFood ? keep((v) => v.bulk!.foodGrade, 'Needs a food-grade tank') : null) ??
+      (u.spec.temp !== 'ambient' ? keep((v) => v.bulk!.insulated, 'Needs an insulated tank') : null) ??
+      keep((v) => v.bulk!.compartments.some((c) => !fillIssues(v, c, u.spec).length), tooSmall));
   if (reason) return reason;
   const hazClass = u.spec.hazmat?.hazClass;
   let conflict: string | null = null;
@@ -303,5 +307,5 @@ function unplacedReason(plan: Plan, tankers: readonly Vehicle[], u: CargoUnit, a
     return false;
   });
   if (!free.length && conflict) return `Hazmat conflict with ${conflict}`;
-  return 'No free compartment large enough';
+  return tooSmall;
 }

@@ -6,7 +6,7 @@ import { overloaded, type Arrangement } from './arrangement';
 import { planIndex, vehicleArrangement } from './context';
 import { boxDistance, evaluateSupport, formatWeightRatio, hazmatIssue, localCheck, needsSupport } from './geometry';
 import { searchPlacement } from './placement';
-import { surgeViolations, tankAxleFixes, tankHardViolations } from './tankCheck';
+import { bulkAxleFixes, bulkHardViolations, surgeViolations } from './bulkCheck';
 
 /** Physics results the evaluation layer computes per vehicle before running the rules. */
 export interface VehiclePhysics {
@@ -133,7 +133,7 @@ function vehicleHardViolations(plan: Plan, v: Vehicle, arr: Arrangement, contain
       hard(`hazmat:${pairKey(a.id, b.id)}`, 'hazmat', msg, [a.id, b.id]);
     }
   }
-  tankHardViolations(plan, v, containers, out);
+  bulkHardViolations(plan, v, containers, out);
 }
 
 function softViolations(plan: Plan, v: Vehicle, ph: VehiclePhysics, arr: Arrangement, out: Violation[]): void {
@@ -267,8 +267,8 @@ function softViolations(plan: Plan, v: Vehicle, ph: VehiclePhysics, arr: Arrange
   }
 
   surgeViolations(plan, v, out);
-  if (axleVios.length && v.tank) {
-    tankAxleFixes(
+  if (axleVios.length && v.bulk) {
+    bulkAxleFixes(
       plan,
       v,
       ph.points,

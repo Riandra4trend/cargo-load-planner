@@ -4,6 +4,7 @@ import { formatLength, formatPercent, formatWeight, lbToKg, M_PER_FT } from '../
 import { bridgeFormulaChecks, lateralImbalance } from '../../physics';
 import { useUnitSystem } from '../../state/hooks';
 import { Chip } from '../common/Chip';
+import { frontLabel } from './bulk';
 import { Section } from './Section';
 import { formatLinearLoad } from './shellFormat';
 import type { ShownState } from './useShownState';
@@ -40,9 +41,9 @@ export function CogPanel({ shown }: { shown: ShownState }) {
       {cog ? (
         <div className="divide-y divide-line/70">
           <Row
-            label={v.tank ? 'From tank front' : 'From front wall'}
+            label={`From ${frontLabel(v)}`}
             value={formatLength(cog.x, sys, { big: true })}
-            sub={`of ${formatLength(v.cargo.l, sys, { big: true })} ${v.tank ? 'tank' : 'floor'}`}
+            sub={`of ${formatLength(v.cargo.l, sys, { big: true })} ${v.bulk ? (v.bulk.kind === 'tipper' ? 'body' : 'tank') : 'floor'}`}
           />
           <Row
             label="Lateral offset"
@@ -56,7 +57,7 @@ export function CogPanel({ shown }: { shown: ShownState }) {
             sub={`${formatLength(cog.z + v.deckHeight, sys, { big: true })} above ground · max ${formatLength(v.maxCogHeight, sys, { big: true })}`}
             ok={cog.z <= v.maxCogHeight + 1e-9}
           />
-          {shown.stage === 0 && !v.tank && (
+          {shown.stage === 0 && !v.bulk && (
             <Row
               label="Floor peak load"
               value={formatLinearLoad(ve.floorPeak.kgPerM, sys)}

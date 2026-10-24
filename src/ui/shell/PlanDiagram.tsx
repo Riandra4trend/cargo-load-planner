@@ -8,7 +8,7 @@ import { loadingSequence, type LoadStep } from '../../sim/sequence';
 import { evaluatePlan } from '../../state/evaluate';
 import { ColorDot } from '../common/Chip';
 import { stopColorsBySeq } from './shellFormat';
-import { compartmentRows, formatCargoLitres, type CompartmentRow } from './tanker';
+import { bulkState, compartmentRows, formatBulkVolume, unitState, type CompartmentRow } from './bulk';
 
 export interface PlanDiagramProps {
   plan: Plan;
@@ -100,11 +100,17 @@ function buildStacks(steps: LoadStep[], weightOf: (id: Id) => number): Stack[] {
   return [...stacks.values()];
 }
 
-/** Label of a compartment in the diagrams: ["C1 · Diesel", "7,700 L · Stop 1"] (or "C1 · empty"). */
-function compartmentText(row: CompartmentRow, sys: Plan['settings']['units']): [string, string] {
+/** Volume text of a compartment row in the material's unit (L / gal or m³ / yd³). */
+function rowVolume(row: CompartmentRow, v: Vehicle, sys: Plan['settings']['units']): string {
   const u = row.fills[0];
-  if (!u) return [`${row.compartment.label} · empty`, formatCargoLitres(row.compartment.capacityL, sys)];
-  return [`${row.compartment.label} · ${u.spec.liquid?.name ?? u.spec.name}`, `${formatCargoLitres(row.volumeL, sys)} · Stop ${u.stopSeq}`];
+  return formatBulkVolume(u ? row.volumeL : row.compartment.capacityL, u ? unitState(u) : bulkState(v), sys);
+}
+
+/** Label of a compartment in the diagrams: ["C1 · Diesel", "7,700 L · Stop 1"] (or "C1 · empty"). */
+function compartmentText(row: CompartmentRow, v: Vehicle, sys: Plan['settings']['units']): [string, string] {
+  const u = row.fills[0];
+  if (!u) return [`${row.compartment.label} · empty`, rowVolume(row, v, sys)];
+  return [`${row.compartment.label} · ${u.spec.material?.name ?? u.spec.name}`, `${rowVolume(row, v, sys)} · Stop ${u.stopSeq}`];
 }
 
 const LABEL_FS = 9;
@@ -115,20 +121,24 @@ const fitsWidth = (text: string, px: number): boolean => text.length * LABEL_FS 
  * Side-view label lines for a compartment, longest form that fits: "C1 · Diesel (solar) · 7,700 L · Stop 1",
  * then "C1 Diesel (solar) 7,700 L", "C1 Diesel 7,700 L", then two lines ("C1 Diesel" / "7,700 L"). The stop is on the lid.
  */
-function tankLabelLines(row: CompartmentRow, sys: Plan['settings']['units'], px: number): string[] {
+function bulkLabelLines(row: CompartmentRow, v: Vehicle, sys: Plan['settings']['units'], px: number): string[] {
   const c = row.compartment.label;
   const u = row.fills[0];
-  const name = u ? (u.spec.liquid?.name ?? u.spec.name) : 'empty';
+  const name = u ? (u.spec.material?.name ?? u.spec.name) : 'empty';
   const short = name.replace(/\s*\(.*\)\s*/, '');
-  const litres = formatCargoLitres(u ? row.volumeL : row.compartment.capacityL, sys);
-  const candidates = u ? [`${c} · ${name} · ${litres} · Stop ${u.stopSeq}`, `${c} ${name} ${litres}`, `${c} ${short} ${litres}`] : [`${c} empty · ${litres}`];
+  const volume = rowVolume(row, v, sys);
+  const candidates = u ? [`${c} · ${name} · ${volume} · Stop ${u.stopSeq}`, `${c} ${name} ${volume}`, `${c} ${short} ${volume}`] : [`${c} empty · ${volume}`];
   const one = candidates.find((t) => fitsWidth(t, px));
   if (one) return [one];
-  return [`${c} ${short}`, litres].map((t) => (fitsWidth(t, px) ? t : fit(t, px, LABEL_FS * 1.1)));
+  return [`${c} ${short}`, volume].map((t) => (fitsWidth(t, px) ? t : fit(t, px, LABEL_FS * 1.1)));
 }
 
-/** Tank barrel in side elevation: bulkheads, liquid levels in each liquid's colour, max-fill lines and stop-coloured lids. */
-function TankSide({
+/**
+ * Bulk body in side elevation. Tankers: rounded barrel with bulkheads, liquid levels, max-fill lines and
+ * stop-coloured lids. Tippers: open dump body with the heap level. Both show a dashed red "legal max" level
+ * (weight-limited volume) and hatch any overloaded volume.
+ */
+function BulkSide({
   plan,
   v,
   X,
@@ -148,17 +158,24 @@ function TankSide({
   onSelect?: (unitIds: Id[]) => void;
 }) {
   const sys = plan.settings.units;
-  const rows = compartmentRows(plan, evaluatePlan(plan).units, v);
+  const evaluation = evaluatePlan(plan);
+  const rows = compartmentRows(plan, evaluation.units, v, evaluation.byVehicle[v.id]?.points);
   const colors = stopColorsBySeq(plan);
+  const tipper = v.bulk?.kind === 'tipper';
   const h = v.cargo.h;
-  const r = Math.min((h * s) / 2, 22);
+  const r = tipper ? 2 : Math.min((h * s) / 2, 22);
   const halo = { paintOrder: 'stroke' as const, stroke: 'white', strokeWidth: 3, strokeLinejoin: 'round' as const };
+  const x0 = X(0);
+  const x1 = X(v.cargo.l);
   return (
     <g>
       <defs>
         <clipPath id={`${clipId}s`}>
-          <rect x={X(0)} y={Z(h)} width={v.cargo.l * s} height={h * s} rx={r} />
+          <rect x={x0} y={Z(tipper ? h * 1.3 : h)} width={v.cargo.l * s} height={(tipper ? h * 1.3 : h) * s} rx={r} />
         </clipPath>
+        <pattern id={`${clipId}h`} width={6} height={6} patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+          <rect width={3} height={6} fill="var(--color-bad)" fillOpacity={0.75} />
+        </pattern>
       </defs>
       {rows.map((row) => {
         const first = row.fills[0];
@@ -175,19 +192,23 @@ function TankSide({
         );
       })}
       <g clipPath={`url(#${clipId}s)`}>
-        <rect x={X(0)} y={Z(h)} width={v.cargo.l * s} height={h * s} fill="#F4F2EC" />
+        <rect x={x0} y={Z(h)} width={v.cargo.l * s} height={h * s} fill="#F4F2EC" />
         {rows.map((row) => {
           const c = row.compartment;
           const w = (c.toX - c.fromX) * s;
           const first = row.fills[0];
-          const level = Math.min(1, row.fill);
+          const level = Math.min(tipper ? 1.3 : 1, row.fill);
+          const legalLevel = row.legal ? row.legal.litres / c.capacityL : null;
           const isSel = row.fills.some((u) => selected.has(u.id));
           return (
             <g key={c.id} onClick={onSelect && first ? () => onSelect(row.fills.map((u) => u.id)) : undefined} style={onSelect && first ? { cursor: 'pointer' } : undefined}>
-              <title>{`${compartmentText(row, sys).join(' · ')} · ${formatPercent(row.fill)} full (max ${formatPercent(row.maxFill)})`}</title>
+              <title>{`${compartmentText(row, v, sys).join(' · ')} · ${formatPercent(row.fill)} full (max ${formatPercent(row.maxFill)})`}</title>
               <rect x={X(c.fromX)} y={Z(h)} width={w} height={h * s} fill="transparent" />
               {first && <rect x={X(c.fromX)} y={Z(level * h)} width={w} height={level * h * s} fill={row.color} fillOpacity={0.85} />}
-              {first && <line x1={X(c.fromX) + 3} x2={X(c.toX) - 3} y1={Z(row.maxFill * h)} y2={Z(row.maxFill * h)} stroke={INK} strokeDasharray="3 2" strokeWidth={0.8} />}
+              {first && legalLevel !== null && legalLevel < level && (
+                <rect x={X(c.fromX)} y={Z(level * h)} width={w} height={(level - legalLevel) * h * s} fill={`url(#${clipId}h)`} />
+              )}
+              {first && !tipper && <line x1={X(c.fromX) + 3} x2={X(c.toX) - 3} y1={Z(row.maxFill * h)} y2={Z(row.maxFill * h)} stroke={INK} strokeDasharray="3 2" strokeWidth={0.8} />}
               {isSel && <rect x={X(c.fromX) + 1} y={Z(h) + 1} width={w - 2} height={h * s - 2} fill="none" stroke={INK} strokeWidth={2.25} />}
             </g>
           );
@@ -196,13 +217,33 @@ function TankSide({
           <line key={`bh${row.compartment.id}`} x1={X(row.compartment.fromX)} x2={X(row.compartment.fromX)} y1={Z(h)} y2={Z(0)} stroke={INK} strokeWidth={1.5} />
         ))}
       </g>
-      <rect x={X(0)} y={Z(h)} width={v.cargo.l * s} height={h * s} rx={r} fill="none" stroke={INK} strokeWidth={1.75} />
+      {tipper ? (
+        <path d={`M${x0},${Z(h)} L${x0},${Z(0)} L${x1},${Z(0)} L${x1},${Z(h)}`} fill="none" stroke={INK} strokeWidth={2.25} strokeLinejoin="round" />
+      ) : (
+        <rect x={x0} y={Z(h)} width={v.cargo.l * s} height={h * s} rx={r} fill="none" stroke={INK} strokeWidth={1.75} />
+      )}
+      {rows.map((row) => {
+        const c = row.compartment;
+        if (!row.fills.length || !row.legal || row.legal.limitedBy === 'Capacity') return null;
+        const y = Z(Math.min(1.3, row.legal.litres / c.capacityL) * h);
+        const label = `legal max ${formatBulkVolume(row.legal.litres, unitState(row.fills[0]), sys)}`;
+        return (
+          <g key={`legal${c.id}`} pointerEvents="none">
+            <line x1={X(c.fromX) + 2} x2={X(c.toX) - 2} y1={y} y2={y} stroke="var(--color-bad)" strokeWidth={1.5} strokeDasharray="5 3" />
+            {fitsWidth(label, (c.toX - c.fromX) * s - 8) && (
+              <text x={X(c.toX) - 5} y={y - 3} textAnchor="end" fontSize={8.5} fontWeight={700} fill="var(--color-bad)" fontFamily={FONT} className="num" style={halo}>
+                {label}
+              </text>
+            )}
+          </g>
+        );
+      })}
       {rows.map((row) => {
         const c = row.compartment;
         const w = (c.toX - c.fromX) * s;
         const cx = X((c.fromX + c.toX) / 2);
-        const lines = tankLabelLines(row, sys, w - 8);
-        const top = Z(h * 0.55) - ((lines.length - 1) * 11) / 2;
+        const lines = bulkLabelLines(row, v, sys, w - 8);
+        const top = Z(h * (tipper ? 0.3 : 0.55)) - ((lines.length - 1) * 11) / 2;
         return (
           <g key={`t${c.id}`} pointerEvents="none" fontFamily={FONT}>
             {lines.map((text, i) => (
@@ -225,7 +266,7 @@ function TankSide({
 /**
  * Printable, dimensioned 2D drawing of one vehicle: top-down floor plan or side elevation, units
  * coloured by stop and labelled with their loading-sequence number, bays, temperature zones and axles.
- * Tankers show the barrel with compartments and liquid levels instead.
+ * Bulk vehicles show the tank barrel or dump body with fill levels and the legal maximum instead.
  */
 export function PlanDiagram({ plan, vehicleId, mode, width, selection, onSelect }: PlanDiagramProps) {
   const clipId = `tank${useId().replace(/[^\w-]/g, '')}`;
@@ -250,12 +291,12 @@ export function PlanDiagram({ plan, vehicleId, mode, width, selection, onSelect 
   const s = Math.max(1, (width - ml - mr) / (xMax - xMin));
   const X = (x: number) => ml + (x - xMin) * s;
 
-  if (v.tank && mode === 'top') {
+  if (v.bulk && mode === 'top') {
     const rows = compartmentRows(plan, evaluation.units, v);
     const mb = 40;
     const height = mt + v.cargo.w * s + mb;
     const Y = (y: number) => mt + y * s;
-    const r = Math.min((v.cargo.w * s) / 2, 18);
+    const r = v.bulk.kind === 'tipper' ? 3 : Math.min((v.cargo.w * s) / 2, 18);
     return (
       <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`Top view of ${v.name}: ${rows.length} compartments`} className="h-auto max-w-full" style={{ fontFamily: FONT }}>
         <defs>
@@ -268,7 +309,7 @@ export function PlanDiagram({ plan, vehicleId, mode, width, selection, onSelect 
             const c = row.compartment;
             const first = row.fills[0];
             const isSel = row.fills.some((u) => selected.has(u.id));
-            const [l1, l2] = compartmentText(row, sys);
+            const [l1, l2] = compartmentText(row, v, sys);
             const w = (c.toX - c.fromX) * s;
             return (
               <g key={c.id} onClick={onSelect && first ? () => onSelect(row.fills.map((u) => u.id)) : undefined} style={onSelect && first ? { cursor: 'pointer' } : undefined}>
@@ -385,7 +426,7 @@ export function PlanDiagram({ plan, vehicleId, mode, width, selection, onSelect 
     );
   }
 
-  // Side elevation, viewed from the left (y = 0) wall: nearer units are drawn last. Tankers show the barrel.
+  // Side elevation, viewed from the left (y = 0) wall: nearer units are drawn last. Bulk vehicles show the tank or dump body.
   const wheelR = Math.min(0.5, v.deckHeight * 0.75);
   const mb = 30;
   const height = mt + (v.cargo.h + v.deckHeight) * s + mb;
@@ -425,8 +466,8 @@ export function PlanDiagram({ plan, vehicleId, mode, width, selection, onSelect 
           {g.label}
         </text>
       ))}
-      {v.tank ? (
-        <TankSide plan={plan} v={v} X={X} Z={Z} s={s} clipId={clipId} selected={selected} onSelect={onSelect} />
+      {v.bulk ? (
+        <BulkSide plan={plan} v={v} X={X} Z={Z} s={s} clipId={clipId} selected={selected} onSelect={onSelect} />
       ) : (
         <>
           {showZones &&
@@ -473,10 +514,11 @@ export function PlanLegend({ plan, vehicleId }: { plan: Plan; vehicleId: Id }) {
   const colors = stopColorsBySeq(plan);
   const customers = new Map(plan.customers.map((c) => [c.id, c.name]));
   const stops = [...plan.stops].sort((a, b) => a.sequence - b.sequence).filter((s) => seqs.has(s.sequence));
-  const temps = !v.tank && (v.tempControlled || v.zones.length > 1) ? [...new Set(v.zones.map((z) => z.temp))] : [];
-  const liquids = v.tank
-    ? [...new Map(compartmentRows(plan, evaluation.units, v).flatMap((r) => r.fills.map((u) => [u.spec.liquid?.name ?? u.spec.name, r.color] as const))).entries()]
+  const temps = !v.bulk && (v.tempControlled || v.zones.length > 1) ? [...new Set(v.zones.map((z) => z.temp))] : [];
+  const materials = v.bulk
+    ? [...new Map(compartmentRows(plan, evaluation.units, v).flatMap((r) => r.fills.map((u) => [u.spec.material?.name ?? u.spec.name, r.color] as const))).entries()]
     : [];
+  const tipper = v.bulk?.kind === 'tipper';
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-ink-soft">
       {stops.map((s) => (
@@ -491,23 +533,33 @@ export function PlanLegend({ plan, vehicleId }: { plan: Plan; vehicleId: Id }) {
           {TEMP_LABELS[t]} zone
         </span>
       ))}
-      {v.tank ? (
+      {v.bulk ? (
         <>
-          {liquids.map(([name, color]) => (
+          {materials.map(([name, color]) => (
             <span key={name} className="flex items-center gap-1.5">
               <span className="inline-block h-2.5 w-4 rounded-sm" style={{ background: color, opacity: 0.85 }} aria-hidden />
               {name}
             </span>
           ))}
+          {!tipper && (
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block w-4 border-t border-dashed border-ink" aria-hidden />
+              max safe fill
+            </span>
+          )}
           <span className="flex items-center gap-1.5">
-            <span className="inline-block w-4 border-t border-dashed border-ink" aria-hidden />
-            max safe fill
+            <span className="inline-block w-4 border-t-2 border-dashed border-bad" aria-hidden />
+            legal max (weight)
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block h-2.5 w-4 rounded-sm" style={{ background: 'repeating-linear-gradient(135deg, var(--color-bad) 0 3px, transparent 3px 6px)' }} aria-hidden />
+            overloaded
           </span>
           <span className="flex items-center gap-1.5">
             <span className="num inline-flex h-3 w-4 items-center justify-center rounded-sm bg-ink-soft text-[8px] font-bold text-white" aria-hidden>
               1
             </span>
-            lid = delivery stop
+            {tipper ? 'badge = delivery stop' : 'lid = delivery stop'}
           </span>
         </>
       ) : (

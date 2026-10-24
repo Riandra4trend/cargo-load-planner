@@ -1,10 +1,10 @@
-import { Droplet, Search, Snowflake, Thermometer, Trash2, TriangleAlert } from 'lucide-react';
+import { Droplet, Mountain, Search, Snowflake, Thermometer, Trash2, TriangleAlert } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { BUILT_IN_TEMPLATES } from '../../data/templates';
 import { TEMP_COLORS, TEMP_LABELS, hazmatColor } from '../../domain/colors';
-import { isBulkLiquid } from '../../domain/geometry';
-import { liquidColor } from '../../domain/liquids';
-import { formatDims, formatLitres, formatWeight } from '../../domain/units';
+import { isBulk } from '../../domain/geometry';
+import { materialColor } from '../../domain/materials';
+import { formatDims, formatMaterialVolume, formatWeight } from '../../domain/units';
 import type { ItemTemplate } from '../../domain/types';
 import { useUnitSystem } from '../../state/hooks';
 import { useStore } from '../../state/store';
@@ -18,18 +18,19 @@ export function useAllTemplates(): ItemTemplate[] {
   return useMemo(() => [...library, ...BUILT_IN_TEMPLATES], [library]);
 }
 
-/** Display group of a template: saved by the user, liquids, or general freight. */
-export function templateGroup(t: ItemTemplate): 'Saved' | 'Liquids' | 'General freight' {
+/** Display group of a template: saved by the user, liquids, dry bulk, or general freight. */
+export function templateGroup(t: ItemTemplate): 'Saved' | 'Liquids' | 'Dry bulk' | 'General freight' {
   if (!t.builtIn) return 'Saved';
-  return t.spec.liquid ? 'Liquids' : 'General freight';
+  if (!t.spec.material) return 'General freight';
+  return t.spec.material.state === 'solid' ? 'Dry bulk' : 'Liquids';
 }
 
-export const TEMPLATE_GROUPS = ['Saved', 'General freight', 'Liquids'] as const;
+export const TEMPLATE_GROUPS = ['Saved', 'General freight', 'Liquids', 'Dry bulk'] as const;
 
 const matches = (t: ItemTemplate, q: string) =>
-  [t.spec.name, t.spec.sku, t.spec.category, t.spec.origin, t.spec.hazmat?.unNumber ?? '', t.contents ?? '', t.spec.liquid?.name ?? ''].some((s) => s.toLowerCase().includes(q));
+  [t.spec.name, t.spec.sku, t.spec.category, t.spec.origin, t.spec.hazmat?.unNumber ?? '', t.contents ?? '', t.spec.material?.name ?? ''].some((s) => s.toLowerCase().includes(q));
 
-/** Searchable list of built-in and saved templates, grouped (saved, general freight, liquids). */
+/** Searchable list of built-in and saved templates, grouped (saved, general freight, liquids, dry bulk). */
 export function TemplatePicker({ onPick, className = '' }: { onPick: (template: ItemTemplate) => void; className?: string }) {
   const sys = useUnitSystem();
   const removeTemplate = useStore((s) => s.removeTemplate);
@@ -42,7 +43,7 @@ export function TemplatePicker({ onPick, className = '' }: { onPick: (template: 
     <div className={`flex flex-col gap-2 ${className}`}>
       <div className="relative">
         <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
-        <TextInput className="pl-8" placeholder={`Search ${all.length} templates (name, SKU, category, UN, liquid…)`} value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Search templates" autoFocus />
+        <TextInput className="pl-8" placeholder={`Search ${all.length} templates (name, SKU, category, UN, material…)`} value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Search templates" autoFocus />
       </div>
       <div className="max-h-72 overflow-y-auto rounded-lg border border-line" role="listbox" aria-label="Templates">
         {list.length === 0 && <p className="px-3 py-6 text-center text-xs text-muted">No template matches “{query}”.</p>}
@@ -62,14 +63,18 @@ export function TemplatePicker({ onPick, className = '' }: { onPick: (template: 
                           {[t.spec.category, t.contents].filter(Boolean).join(' · ')}
                           {t.spec.category || t.contents ? ' · ' : ''}
                           <span className="font-mono num">
-                            {isBulkLiquid(t.spec) ? 'tanker fill' : formatDims(t.spec.dims, sys)} · {formatWeight(t.spec.weightKg, sys)}
+                            {isBulk(t.spec) ? (t.spec.material?.state === 'solid' ? 'dump-truck load' : 'tanker fill') : formatDims(t.spec.dims, sys)} · {formatWeight(t.spec.weightKg, sys)}
                           </span>
                         </span>
                       </span>
-                      {t.spec.liquid && (
-                        <Chip className="shrink-0" title={t.spec.liquid.name}>
-                          <Droplet className="h-3 w-3" style={{ color: liquidColor(t.spec.liquid.liquidId) }} />
-                          {formatLitres(t.spec.liquid.volumeL, sys, 0)}
+                      {t.spec.material && (
+                        <Chip className="shrink-0" title={t.spec.material.name}>
+                          {t.spec.material.state === 'solid' ? (
+                            <Mountain className="h-3 w-3" style={{ color: materialColor(t.spec.material.materialId, 'solid') }} />
+                          ) : (
+                            <Droplet className="h-3 w-3" style={{ color: materialColor(t.spec.material.materialId) }} />
+                          )}
+                          {formatMaterialVolume(t.spec.material.volumeL, t.spec.material.state, sys)}
                         </Chip>
                       )}
                       {t.spec.temp !== 'ambient' && (

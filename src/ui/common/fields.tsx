@@ -1,6 +1,6 @@
 import { useId, useState, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from 'react';
-import type { UnitSystem } from '../../domain/types';
-import { fromKg, fromMetres, kgToLb, L_PER_US_GAL, lbToKg, parseNumber, toKg, toMetres, type LengthUnit, type WeightUnit, LENGTH_UNITS, WEIGHT_UNITS } from '../../domain/units';
+import type { MaterialState, UnitSystem } from '../../domain/types';
+import { fromKg, fromMetres, kgToLb, L_PER_CU_YD, L_PER_US_GAL, M_PER_FT, parseNumber, toKg, toMetres, type LengthUnit, type WeightUnit, LENGTH_UNITS, WEIGHT_UNITS } from '../../domain/units';
 
 export const inputClass =
   'h-9 w-full rounded-lg border border-line bg-card px-2.5 text-sm text-ink placeholder:text-muted focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25 disabled:bg-canvas disabled:text-muted';
@@ -195,13 +195,30 @@ export function LitresInput({
   return <NumberInput value={litres / perUnit} onChange={(n) => onChange(n * perUnit)} digits={sys === 'metric' ? 1 : 2} min={min / perUnit} suffix={sys === 'metric' ? 'L' : 'gal'} {...rest} />;
 }
 
-/** Liquid density input: value in kg/L, typed in kg/L (metric) or lb/gal (imperial, US gallons). */
-export function LiquidDensityInput({
+/** Material volume input: value in litres, typed in L / US gal for liquids and m³ / cubic yards for dry bulk. */
+export function MaterialVolumeInput({
+  litres,
+  onChange,
+  state,
+  sys,
+  min = 0,
+  ...rest
+}: { litres: number; onChange: (litres: number) => void; state: MaterialState; sys: UnitSystem; min?: number } & Omit<NumberInputProps, 'value' | 'onChange' | 'suffix' | 'min'>) {
+  if (state === 'liquid') return <LitresInput litres={litres} onChange={onChange} sys={sys} min={min} {...rest} />;
+  const perUnit = sys === 'metric' ? 1000 : L_PER_CU_YD;
+  return <NumberInput value={litres / perUnit} onChange={(n) => onChange(n * perUnit)} digits={2} min={min / perUnit} suffix={sys === 'metric' ? 'm³' : 'yd³'} {...rest} />;
+}
+
+/** Material density input: value in kg/L; liquids typed in kg/L or lb/gal, dry bulk in t/m³ or lb/ft³. */
+export function MaterialDensityInput({
   kgPerL,
   onChange,
+  state,
   sys,
   ...rest
-}: { kgPerL: number; onChange: (kgPerL: number) => void; sys: UnitSystem } & Omit<NumberInputProps, 'value' | 'onChange' | 'suffix'>) {
-  if (sys === 'metric') return <NumberInput value={kgPerL} onChange={onChange} digits={3} suffix="kg/L" {...rest} />;
-  return <NumberInput value={kgToLb(kgPerL) * L_PER_US_GAL} onChange={(n) => onChange(lbToKg(n) / L_PER_US_GAL)} digits={2} suffix="lb/gal" {...rest} />;
+}: { kgPerL: number; onChange: (kgPerL: number) => void; state: MaterialState; sys: UnitSystem } & Omit<NumberInputProps, 'value' | 'onChange' | 'suffix'>) {
+  if (sys === 'metric') return <NumberInput value={kgPerL} onChange={onChange} digits={state === 'liquid' ? 3 : 2} suffix={state === 'liquid' ? 'kg/L' : 't/m³'} {...rest} />;
+  // Imperial: lb per US gallon for liquids, lb per cubic foot for dry bulk.
+  const perKgPerL = state === 'liquid' ? kgToLb(1) * L_PER_US_GAL : kgToLb(1000) * M_PER_FT ** 3;
+  return <NumberInput value={kgPerL * perKgPerL} onChange={(n) => onChange(n / perKgPerL)} digits={state === 'liquid' ? 2 : 1} suffix={state === 'liquid' ? 'lb/gal' : 'lb/ft³'} {...rest} />;
 }

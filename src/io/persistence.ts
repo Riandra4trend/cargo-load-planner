@@ -1,6 +1,6 @@
 import { uid } from '../domain/ids';
 import type { Id, ItemTemplate, Plan, UnitSystem } from '../domain/types';
-import { parsePlanJson } from './planFile';
+import { parsePlanJson, upgradeSpec } from './planFile';
 
 /**
  * Browser persistence (localStorage). Every value is JSON; corrupt or foreign entries are ignored.
@@ -187,7 +187,7 @@ function isTemplate(x: unknown): x is ItemTemplate {
 /** User-saved item templates (never the built-in ones). */
 export function loadLibrary(): ItemTemplate[] {
   const data = readJson(STORAGE_KEYS.library);
-  return Array.isArray(data) ? data.filter(isTemplate).map((t) => ({ ...t, builtIn: false })) : [];
+  return Array.isArray(data) ? data.filter(isTemplate).map((t) => ({ ...t, spec: upgradeSpec(t.spec), builtIn: false })) : [];
 }
 
 export function saveLibrary(templates: ItemTemplate[]): void {

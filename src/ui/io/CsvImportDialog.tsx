@@ -2,7 +2,7 @@ import { ArrowLeft, ArrowRight, CircleAlert, ClipboardPaste, FileSpreadsheet, In
 import { useCallback, useMemo, useRef, useState, type DragEvent } from 'react';
 import { TEMP_LABELS } from '../../domain/colors';
 import type { UnitSystem } from '../../domain/types';
-import { formatDims, formatLiquidDensity, formatLitres, formatWeight, LENGTH_UNITS, WEIGHT_UNITS, type LengthUnit, type WeightUnit } from '../../domain/units';
+import { formatDims, formatMaterialDensity, formatMaterialVolume, formatWeight, LENGTH_UNITS, WEIGHT_UNITS, type LengthUnit, type WeightUnit } from '../../domain/units';
 import {
   autoMapColumns,
   bindNewStops,
@@ -34,13 +34,13 @@ const STEPS: { key: Step; label: string }[] = [
 ];
 const PREVIEW_ROWS = 5;
 const NOT_MAPPED = '';
-const GROUPS: FieldDef['group'][] = ['Item', 'Delivery', 'Handling', 'Liquid', 'Hazmat', 'Details'];
+const GROUPS: FieldDef['group'][] = ['Item', 'Delivery', 'Handling', 'Material', 'Hazmat', 'Details'];
 const DELIMITER_LABEL: Record<ParsedCsv['delimiter'], string> = { ',': 'comma', ';': 'semicolon', '\t': 'tab' };
 
 const defaultLengthUnit = (sys: UnitSystem): LengthUnit => (sys === 'metric' ? 'cm' : 'in');
 const defaultWeightUnit = (sys: UnitSystem): WeightUnit => (sys === 'metric' ? 'kg' : 'lb');
-const defaultVolumeUnit = (sys: UnitSystem): VolumeUnit => (sys === 'metric' ? 'L' : 'gal');
-const defaultDensityUnit = (sys: UnitSystem): DensityUnit => (sys === 'metric' ? 'kg/L' : 'lb/gal');
+const VOLUME_LABELS: Record<VolumeUnit, string> = { auto: 'By material', L: 'L', gal: 'US gal', m3: 'm³', yd3: 'yd³' };
+const DENSITY_LABELS: Record<DensityUnit, string> = { auto: 'By material', 'kg/L': 'kg/L', 't/m3': 't/m³', 'kg/m3': 'kg/m³', 'lb/gal': 'lb/gal', 'lb/ft3': 'lb/ft³' };
 
 function ReportList({ entries }: { entries: ImportReportEntry[] }) {
   if (!entries.length) return <p className="rounded-lg bg-ok-soft px-3 py-2 text-xs text-ok">Every row is valid.</p>;
@@ -79,8 +79,8 @@ export function CsvImportDialog() {
   const [mapping, setMapping] = useState<FieldMapping>({});
   const [lengthUnit, setLengthUnit] = useState<LengthUnit>(defaultLengthUnit(sys));
   const [weightUnit, setWeightUnit] = useState<WeightUnit>(defaultWeightUnit(sys));
-  const [volumeUnit, setVolumeUnit] = useState<VolumeUnit>(defaultVolumeUnit(sys));
-  const [densityUnit, setDensityUnit] = useState<DensityUnit>(defaultDensityUnit(sys));
+  const [volumeUnit, setVolumeUnit] = useState<VolumeUnit>('auto');
+  const [densityUnit, setDensityUnit] = useState<DensityUnit>('auto');
   const [dragOver, setDragOver] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const close = useCallback(() => closeDialog('import'), [closeDialog]);
@@ -90,7 +90,7 @@ export function CsvImportDialog() {
     [parsed, mapping, lengthUnit, weightUnit, volumeUnit, densityUnit, plan],
   );
   const missingRequired = missingRequiredFields(mapping);
-  const liquidMapped = mapping.liquid !== undefined;
+  const materialMapped = mapping.material !== undefined;
 
   const readFile = async (file: File) => {
     setFileName(file.name);
@@ -113,8 +113,8 @@ export function CsvImportDialog() {
       setMapping(auto.mapping);
       setLengthUnit(auto.lengthUnit ?? defaultLengthUnit(sys));
       setWeightUnit(auto.weightUnit ?? defaultWeightUnit(sys));
-      setVolumeUnit(auto.volumeUnit ?? defaultVolumeUnit(sys));
-      setDensityUnit(auto.densityUnit ?? defaultDensityUnit(sys));
+      setVolumeUnit(auto.volumeUnit ?? 'auto');
+      setDensityUnit(auto.densityUnit ?? 'auto');
       setParseError(null);
       setStep('mapping');
     } catch (err) {
@@ -231,8 +231,9 @@ export function CsvImportDialog() {
           {parseError && <p className="rounded-lg bg-bad-soft px-3 py-2 text-xs text-bad">{parseError}</p>}
           <p className="text-xs text-muted">
             Columns are matched automatically (name, SKU, length, width, height, weight, quantity, stop, customer, temperature, UN number, hazmat class and more). Unit suffixes such as
-            “Length (in)”, “weight_kg” or “Volume (gal)” are detected; units written in a cell (“48 in”, “500 lb”, “1000 L”) override the column unit. Liquids: add a liquid column (e.g.
-            diesel, water, milk) with a volume and a container (bulk / tanker, drum, IBC, jerrycan); the weight then follows from the density.
+            “Length (in)”, “weight_kg”, “Volume (gal)” or “Volume (m³)” are detected; units written in a cell (“48 in”, “500 lb”, “1000 L”, “10 m³”) override the column unit. Liquids and
+            dry bulk: add a material column (e.g. diesel, water, sand, gravel, coal) with a volume and, for packaged goods, a container (drum, IBC, jerrycan; bulk = tanker or dump
+            truck); the weight then follows from the density. Unknown materials need a density column.
           </p>
         </div>
       )}
@@ -249,13 +250,13 @@ export function CsvImportDialog() {
             <Field label="Weights in" className="w-28">
               <Select value={weightUnit} onChange={setWeightUnit} options={WEIGHT_UNITS.map((u) => ({ value: u, label: u }))} aria-label="Weight unit" />
             </Field>
-            {liquidMapped && (
+            {materialMapped && (
               <>
-                <Field label="Volumes in" className="w-24">
-                  <Select value={volumeUnit} onChange={setVolumeUnit} options={VOLUME_UNITS.map((u) => ({ value: u, label: u === 'gal' ? 'US gal' : u }))} aria-label="Volume unit" />
+                <Field label="Volumes in" className="w-40" hint={volumeUnit === 'auto' ? (sys === 'metric' ? 'Liquids L, dry bulk m³' : 'Liquids gal, dry bulk yd³') : undefined}>
+                  <Select value={volumeUnit} onChange={setVolumeUnit} options={VOLUME_UNITS.map((u) => ({ value: u, label: VOLUME_LABELS[u] }))} aria-label="Volume unit" />
                 </Field>
-                <Field label="Density in" className="w-28">
-                  <Select value={densityUnit} onChange={setDensityUnit} options={DENSITY_UNITS.map((u) => ({ value: u, label: u === 'kg/m3' ? 'kg/m³' : u }))} aria-label="Density unit" />
+                <Field label="Density in" className="w-40" hint={densityUnit === 'auto' ? (sys === 'metric' ? 'Liquids kg/L, dry bulk t/m³' : 'Liquids lb/gal, dry bulk lb/ft³') : undefined}>
+                  <Select value={densityUnit} onChange={setDensityUnit} options={DENSITY_UNITS.map((u) => ({ value: u, label: DENSITY_LABELS[u] }))} aria-label="Density unit" />
                 </Field>
               </>
             )}
@@ -272,7 +273,7 @@ export function CsvImportDialog() {
                     <label key={f.field} className="grid grid-cols-[9.5rem_minmax(0,1fr)] items-center gap-2 text-xs">
                       <span className={mapping[f.field] === undefined ? 'text-muted' : 'font-medium text-ink'}>
                         {f.label}
-                        {f.required && <span className="text-bad"> *</span>}
+                        {f.required && !materialMapped && <span className="text-bad"> *</span>}
                       </span>
                       <Select
                         value={mapping[f.field] === undefined ? NOT_MAPPED : String(mapping[f.field])}
@@ -321,10 +322,13 @@ export function CsvImportDialog() {
                             <td className="px-2 py-1.5 text-ink">{line.spec.name}</td>
                             <td className="px-2 py-1.5 font-mono num">{line.quantity}</td>
                             <td className="whitespace-nowrap px-2 py-1.5 font-mono num">
-                              {line.spec.liquid ? (
-                                <span title={`${line.spec.liquid.name}, ${formatLiquidDensity(line.spec.liquid.densityKgPerL, sys)}`}>
-                                  {formatLitres(line.spec.liquid.volumeL, sys, 0)} {line.spec.liquid.name}
-                                  <span className="text-muted"> · {line.spec.packaging === 'bulk-liquid' ? 'tanker' : formatDims(line.spec.dims, sys)}</span>
+                              {line.spec.material ? (
+                                <span title={`${line.spec.material.name}, ${formatMaterialDensity(line.spec.material.densityKgPerL, line.spec.material.state, sys)}`}>
+                                  {formatMaterialVolume(line.spec.material.volumeL, line.spec.material.state, sys, line.spec.material.state === 'liquid' ? 0 : 2)} {line.spec.material.name}
+                                  <span className="text-muted">
+                                    {' · '}
+                                    {line.spec.packaging === 'bulk' ? (line.spec.material.state === 'liquid' ? 'tanker' : 'dump truck') : formatDims(line.spec.dims, sys)}
+                                  </span>
                                 </span>
                               ) : (
                                 formatDims(line.spec.dims, sys)

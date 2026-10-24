@@ -1,6 +1,6 @@
 import { Color, type BufferGeometry } from 'three';
 import { PACKAGING_PRESETS } from '../../data/packaging';
-import { liquidColor } from '../../domain/liquids';
+import { materialColor } from '../../domain/materials';
 import type { ItemSpec } from '../../domain/types';
 import { goodsArchetype, type GoodsArchetype } from './archetype';
 import { PartBuilder, seededRandom, vary } from './builder';
@@ -39,7 +39,7 @@ export function goodsKey(spec: ItemSpec): string {
     spec.hazmat?.hazClass ?? '',
     spec.fragile ? 'F' : '',
     Math.sign(spec.cogOffset.x),
-    spec.liquid?.liquidId ?? '',
+    spec.material?.materialId ?? '',
     Math.round(liquidFraction(spec) * 100),
   ].join('|');
 }
@@ -70,8 +70,8 @@ const DARK_STEEL = '#3d4247';
 
 /** Packaged liquid: volume / brim capacity of its container (0 without liquid or capacity). */
 export function liquidFraction(spec: ItemSpec): number {
-  const cap = spec.liquid?.containerCapacityL ?? PACKAGING_PRESETS[spec.packaging]?.capacityL;
-  return spec.liquid && cap ? Math.min(1, Math.max(0, spec.liquid.volumeL / cap)) : 0;
+  const cap = spec.material?.containerCapacityL ?? PACKAGING_PRESETS[spec.packaging]?.capacityL;
+  return spec.material && cap ? Math.min(1, Math.max(0, spec.material.volumeL / cap)) : 0;
 }
 
 /** Generates the realistic model of one unit. Pure; callers own (and dispose) the geometries. */
@@ -454,7 +454,7 @@ const BUILDERS: Record<GoodsArchetype, (ctx: Ctx) => void> = {
   drum: (ctx) => {
     const text = `${ctx.spec.name} ${ctx.spec.category}`.toLowerCase();
     const body = ctx.spec.hazmat?.hazClass === '3' ? '#c0392b' : /oil|lubric/.test(text) ? '#1f4e9a' : palette(ctx.rnd, ['#2f6aa3', '#2b8a3e', '#495057']);
-    const lid = ctx.spec.liquid ? liquidColor(ctx.spec.liquid.liquidId) : null;
+    const lid = ctx.spec.material ? materialColor(ctx.spec.material.materialId) : null;
     if (ctx.spec.shape === 'cylinder-upright') singleDrum(ctx, body, lid);
     else {
       cylinderGrid(ctx, { diameter: 0.585, height: 0.88, body, lid: lid ?? '#2b2f33', rims: true });
@@ -492,10 +492,10 @@ const BUILDERS: Record<GoodsArchetype, (ctx: Ctx) => void> = {
     const z0 = r.z0 + pb;
     const bar = 0.022;
     const tank: [readonly [number, number, number], readonly [number, number, number]] = [[r.x0 + 0.04, r.y0 + 0.04, z0], [r.x1 - 0.04, r.y1 - 0.04, r.z1 - 0.07]];
-    if (ctx.spec.liquid) {
+    if (ctx.spec.material) {
       // Translucent HDPE tank showing the liquid at volume / capacity.
       const level = z0 + 0.01 + (tank[1][2] - z0 - 0.02) * liquidFraction(ctx.spec);
-      b.box([tank[0][0] + 0.01, tank[0][1] + 0.01, z0 + 0.01], [tank[1][0] - 0.01, tank[1][1] - 0.01, level], liquidColor(ctx.spec.liquid.liquidId));
+      b.box([tank[0][0] + 0.01, tank[0][1] + 0.01, z0 + 0.01], [tank[1][0] - 0.01, tank[1][1] - 0.01, level], materialColor(ctx.spec.material.materialId));
       b.box(tank[0], tank[1], null, 'film');
     } else b.box(tank[0], tank[1], '#eef0e8');
     b.cylinder([(r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2, r.z1 - 0.045], 0.11, 0.05, 2, '#f5f5f2', 'solid', 20);
@@ -572,7 +572,7 @@ const BUILDERS: Record<GoodsArchetype, (ctx: Ctx) => void> = {
   },
   jerrycan: (ctx) => {
     const { b, r } = ctx;
-    const can = ctx.spec.liquid ? new Color(liquidColor(ctx.spec.liquid.liquidId)).lerp(new Color('#ffffff'), 0.12) : new Color('#2f6fd1');
+    const can = ctx.spec.material ? new Color(materialColor(ctx.spec.material.materialId)).lerp(new Color('#ffffff'), 0.12) : new Color('#2f6fd1');
     const target = [0.36, 0.17, 0.47] as const;
     const nx = Math.max(1, Math.round((r.x1 - r.x0) / target[0]));
     const ny = Math.max(1, Math.round((r.y1 - r.y0) / target[1]));

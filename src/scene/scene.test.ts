@@ -15,7 +15,8 @@ import { axleLoadText } from './sceneFormat';
 import { dockLayout } from './staging';
 import { chordWidth, compartmentAtX, liquidLevel, tankBarrel } from './tankMath';
 import { unitParts } from './unitParts';
-import { vehicleLayout } from './vehicleLayout';
+import { heapShape, heapVolume, MAX_TIP, tipPoint, tipTimeline } from './tipperMath';
+import { cabOverClass, vehicleLayout } from './vehicleLayout';
 
 const MM = 0.001;
 
@@ -229,7 +230,7 @@ describe('tank liquid level', () => {
 
   it('finds compartments along the barrel and fits pressure-vessel heads inside the cargo length', () => {
     const v = createVehicle('tanker-semi-32k');
-    const cs = v.tank!.compartments;
+    const cs = v.bulk!.compartments;
     expect(compartmentAtX(v, 0.1)?.id).toBe(cs[0].id);
     expect(compartmentAtX(v, cs[2].fromX + 0.01)?.id).toBe(cs[2].id);
     expect(compartmentAtX(v, 99)?.id).toBe(cs[cs.length - 1].id);
@@ -241,11 +242,61 @@ describe('tank liquid level', () => {
   });
 
   it('packaged liquids: IBC level and drum keys follow the contents', () => {
-    const ibc = makeSpec({ name: 'IBC tote', packaging: 'ibc', dims: { l: 1.2, w: 1, h: 1.15 }, weightKg: 900, liquid: { liquidId: 'water', name: 'Water', densityKgPerL: 1, volumeL: 525 } });
+    const ibc = makeSpec({ name: 'IBC tote', packaging: 'ibc', dims: { l: 1.2, w: 1, h: 1.15 }, weightKg: 900, material: { materialId: 'water', name: 'Water', state: 'liquid', densityKgPerL: 1, volumeL: 525 } });
     expect(liquidFraction(ibc)).toBeCloseTo(0.5, 9);
     expect(goodsArchetype(makeSpec({ name: 'Fuel can', packaging: 'jerrycan', dims: { l: 0.36, w: 0.17, h: 0.47 }, weightKg: 18 }))).toBe('jerrycan');
     const model = buildGoodsModel(ibc);
     expect(model.film).not.toBeNull();
     disposeGoodsModel(model);
+  });
+});
+
+describe('tipper geometry', () => {
+  it('heap shape conserves volume, grows monotonically and rises over the sides when overfilled', () => {
+    const [l, w, h] = [5.8, 2.3, 1.2];
+    expect(heapShape(0, l, w, h)).toMatchObject({ level: 0, mound: 0 });
+    let prev = -1;
+    for (let i = 1; i <= 12; i++) {
+      const f = i / 10;
+      const s = heapShape(f, l, w, h);
+      expect(s.level).toBeGreaterThanOrEqual(0);
+      expect(heapVolume(s, l, w)).toBeCloseTo(f * l * w * h, 6);
+      expect(s.level + s.mound).toBeGreaterThan(prev);
+      prev = s.level + s.mound;
+    }
+    expect(heapShape(1.2, l, w, h).level).toBeGreaterThan(h);
+  });
+
+  it('tips about the rear hinge: front rises, hinge stays, distances are preserved', () => {
+    const angle = Math.PI / 4;
+    const hinge = { x: 5.8, z: -0.16 };
+    expect(tipPoint(angle, hinge.x, hinge.z, hinge.x, hinge.z)).toEqual(hinge);
+    const front = tipPoint(angle, hinge.x, hinge.z, 0, -0.16);
+    expect(front.z).toBeCloseTo(-0.16 + 5.8 * Math.sin(angle), 9);
+    expect(front.x).toBeCloseTo(5.8 - 5.8 * Math.cos(angle), 9);
+    const top = tipPoint(angle, hinge.x, hinge.z, hinge.x, 1.0);
+    expect(top.x).toBeGreaterThan(hinge.x);
+    const p = tipPoint(0.3, hinge.x, hinge.z, 2, 0.8);
+    expect(Math.hypot(p.x - hinge.x, p.z - hinge.z)).toBeCloseTo(Math.hypot(2 - hinge.x, 0.8 - hinge.z), 9);
+  });
+
+  it('unload timeline rises to 45°, empties the body and lowers again', () => {
+    expect(tipTimeline(0)).toEqual({ angle: 0, out: 0 });
+    expect(tipTimeline(0.5).angle).toBeCloseTo(MAX_TIP, 9);
+    expect(tipTimeline(0.8).out).toBe(1);
+    expect(tipTimeline(1).angle).toBeCloseTo(0, 9);
+  });
+
+  it('sizes Indonesian cab-overs by class and keeps the front axle under the cab', () => {
+    for (const id of ['id-pickup', 'id-cde-box', 'id-fuso-box', 'id-tronton-wingbox', 'id-dump-tronton']) {
+      const v = createVehicle(id);
+      const layout = vehicleLayout(v);
+      expect(cabOverClass(v)).not.toBeNull();
+      expect(layout.cab.fromX).toBeLessThan(layout.groupX[0]);
+      expect(layout.cab.toX).toBeGreaterThan(layout.groupX[0]);
+    }
+    expect(cabOverClass(createVehicle('id-pickup'))).toBe('pickup');
+    expect(cabOverClass(createVehicle('id-dump-tronton'))).toBe('heavy');
+    expect(cabOverClass(createVehicle('eu-rigid-18'))).toBeNull();
   });
 });

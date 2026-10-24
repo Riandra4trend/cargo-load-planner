@@ -88,7 +88,7 @@ export function evaluatePlan(plan: Plan): PlanEval {
 
   for (const v of plan.vehicles) {
     const placed = units.filter((u) => plan.placements[u.id]?.vehicleId === v.id);
-    // Floor cargo has a box; bulk liquid fills sit in a tanker compartment instead.
+    // Floor cargo has a box; bulk fills sit in a tank compartment or tipper body instead.
     const fills = placed.flatMap((u) => {
       const c = compartmentOf(v, plan.placements[u.id].compartmentId);
       return c ? [{ u, c }] : [];
@@ -123,10 +123,10 @@ export function evaluatePlan(plan: Plan): PlanEval {
 
     let fill: FillInfo;
     let bays: BayInfo[];
-    if (v.tank) {
-      // Tankers: fill by litres, and the "bays" are the compartments.
-      const capacityL = v.tank.compartments.reduce((sum, c) => sum + c.capacityL, 0);
-      const litres = fills.reduce((sum, f) => sum + (f.u.spec.liquid?.volumeL ?? 0), 0);
+    if (v.bulk) {
+      // Tankers and tippers: fill by volume, and the "bays" are the compartments (a tipper's body).
+      const capacityL = v.bulk.compartments.reduce((sum, c) => sum + c.capacityL, 0);
+      const litres = fills.reduce((sum, f) => sum + (f.u.spec.material?.volumeL ?? 0), 0);
       fill = {
         volume: capacityL > 0 ? litres / capacityL : 0,
         weight: axle.cargoKg / v.payloadKg,
@@ -136,7 +136,7 @@ export function evaluatePlan(plan: Plan): PlanEval {
         placedVolume: litres / 1000,
         usableVolume: capacityL / 1000,
       };
-      bays = v.tank.compartments.map((c, index) => {
+      bays = v.bulk.compartments.map((c, index) => {
         const inside = fills.filter((f) => f.c.id === c.id);
         return {
           index,

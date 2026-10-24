@@ -3,10 +3,10 @@ import { Canvas, useThree } from '@react-three/fiber';
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { LineBasicMaterial, SphereGeometry, Vector3 } from 'three';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
-import { isBulkLiquid } from '../domain/geometry';
-import { liquidColor, maxFillPct } from '../domain/liquids';
+import { isBulk } from '../domain/geometry';
+import { materialColor, maxFillPct } from '../domain/materials';
 import type { ItemSpec } from '../domain/types';
-import { formatLength, formatLiquidDensity, formatLitres, formatMass } from '../domain/units';
+import { formatLength, formatMaterialDensity, formatLitres, formatMass } from '../domain/units';
 import { useUnitSystem } from '../state/hooks';
 import { toThree, vecToThree } from './coords';
 import { LabelContext, LabelLayer, LabelProjector, LabelStore, SceneLabel } from './labels';
@@ -41,7 +41,7 @@ export function ItemPreview({ spec, className = '' }: { spec: ItemSpec; classNam
           }}
         >
           <color attach="background" args={['#f4f4f1']} />
-          {isBulkLiquid(spec) ? <BulkPreview spec={spec} /> : <PreviewContent spec={spec} />}
+          {isBulk(spec) ? <BulkPreview spec={spec} /> : <PreviewContent spec={spec} />}
           <LabelProjector store={labels} />
         </Canvas>
         <LabelLayer store={labels} />
@@ -60,7 +60,7 @@ function BulkPreview({ spec }: { spec: ItemSpec }) {
   const invalidate = useThree((s) => s.invalidate);
   const controls = useRef<OrbitControlsImpl>(null);
   const { l, w, h } = SECTION;
-  const liquid = spec.liquid;
+  const liquid = spec.material;
   useLayoutEffect(() => {
     const target = vecToThree({ x: l / 2, y: w / 2, z: h / 2 });
     camera.position.copy(target).addScaledVector(VIEW_DIR, (Math.hypot(l, w, h) / 2 / Math.sin(((FOV / 2) * Math.PI) / 180)) * 1.1);
@@ -77,11 +77,11 @@ function BulkPreview({ spec }: { spec: ItemSpec }) {
       {[0, l].map((x) => (
         <mesh key={x} geometry={X_BAND} material={TANK_MATERIALS.ring} position={toThree(x, w / 2, h / 2)} scale={[0.05, h * 1.015, w * 1.015]} />
       ))}
-      <LiquidBody fromX={0.02} toX={l - 0.02} width={w} height={h} frontHead={0} rearHead={0} color={liquidColor(liquid?.liquidId ?? 'custom')} fill={maxFillPct(liquid?.liquidId ?? 'custom') / 100} />
+      <LiquidBody fromX={0.02} toX={l - 0.02} width={w} height={h} frontHead={0} rearHead={0} color={materialColor(liquid?.materialId ?? 'custom')} fill={maxFillPct(liquid?.materialId ?? 'custom', 'liquid') / 100} />
       <SceneLabel position={toThree(l / 2, w / 2, h + 0.2)}>
         <div className="num w-max -translate-x-1/2 -translate-y-full rounded bg-card/90 px-1.5 py-0.5 text-center font-mono text-[10px] font-semibold text-ink-soft shadow-sm">
           {formatLitres(liquid?.volumeL ?? 0, units, (liquid?.volumeL ?? 0) >= 100 ? 0 : 1)} · {formatMass(spec.weightKg, units)}
-          {liquid && <div className="font-normal text-muted">{formatLiquidDensity(liquid.densityKgPerL, units)}</div>}
+          {liquid && <div className="font-normal text-muted">{formatMaterialDensity(liquid.densityKgPerL, liquid.state, units)}</div>}
         </div>
       </SceneLabel>
       <OrbitControls ref={controls} enablePan={false} enableDamping={false} minDistance={1.5} maxDistance={14} />

@@ -1,7 +1,7 @@
-import { liquidDef } from '../domain/liquids';
+import { materialDef } from '../domain/materials';
 import type { ItemSpec, ItemTemplate } from '../domain/types';
 import { PACKAGING_PRESETS } from './packaging';
-import { makeBulkLiquidSpec, makeSpec } from './seed';
+import { makeBulkSpec, makeSpec } from './seed';
 
 const EUR = { l: 1.2, w: 0.8 };
 const EUR_HALF = { l: 0.8, w: 0.6 };
@@ -13,8 +13,8 @@ const US_DECK = 0.14;
 const tpl = (id: string, spec: ItemSpec, contents?: string): ItemTemplate => ({ id: `tpl-${id}`, spec, contents, builtIn: true });
 
 /** A library liquid in a preset container at its nominal fill: weight = litres × density + container tare. */
-function packagedLiquid(liquidId: string, kind: 'drum' | 'ibc' | 'jerrycan', partial: Partial<ItemSpec> & Pick<ItemSpec, 'name'>): ItemSpec {
-  const def = liquidDef(liquidId)!;
+function packagedLiquid(materialId: string, kind: 'drum' | 'ibc' | 'jerrycan', partial: Partial<ItemSpec> & Pick<ItemSpec, 'name'>): ItemSpec {
+  const def = materialDef(materialId)!;
   const p = PACKAGING_PRESETS[kind];
   const volumeL = p.nominalL!;
   const liquidKg = volumeL * def.densityKgPerL;
@@ -27,7 +27,7 @@ function packagedLiquid(liquidId: string, kind: 'drum' | 'ibc' | 'jerrycan', par
     temp: def.temp,
     isFood: def.isFood,
     hazmat: def.hazmat ? { ...def.hazmat, netQtyKg: Math.round(liquidKg) } : undefined,
-    liquid: { liquidId, name: def.name, densityKgPerL: def.densityKgPerL, volumeL },
+    material: { materialId, name: def.name, state: 'liquid', densityKgPerL: def.densityKgPerL, volumeL },
     ...partial,
   });
 }
@@ -36,7 +36,7 @@ function packagedLiquid(liquidId: string, kind: 'drum' | 'ibc' | 'jerrycan', par
 const BOTTLES = 30;
 const BOTTLE_L = 19;
 const bottledWater = (): ItemSpec => {
-  const def = liquidDef('drinking-water')!;
+  const def = materialDef('drinking-water')!;
   const volumeL = BOTTLES * BOTTLE_L;
   return makeSpec({
     name: 'Drinking water 19 L bottles',
@@ -48,7 +48,7 @@ const bottledWater = (): ItemSpec => {
     dims: { ...EUR, h: 1.62 },
     weightKg: volumeL * def.densityKgPerL + BOTTLES * 0.75 + PACKAGING_PRESETS['eur-pallet'].tareKg,
     isFood: true,
-    liquid: { liquidId: def.id, name: def.name, densityKgPerL: def.densityKgPerL, volumeL },
+    material: { materialId: def.id, name: def.name, state: 'liquid', densityKgPerL: def.densityKgPerL, volumeL },
   });
 };
 
@@ -189,9 +189,19 @@ export const BUILT_IN_TEMPLATES: ItemTemplate[] = [
   tpl('water-bottles', bottledWater(), `${BOTTLES} × ${BOTTLE_L} L bottles`),
 
   // Liquids: bulk tanker fills (largest legal fill of the preset compartments at the liquid's max fill) --
-  tpl('diesel-bulk', makeBulkLiquidSpec('diesel', 7700, { name: 'Diesel, bulk 7,700 L', sku: 'BLK-1202', category: 'Liquids' }), '7,700 L'),
-  tpl('gasoline-bulk', makeBulkLiquidSpec('gasoline', 5800, { name: 'Gasoline, bulk 5,800 L', sku: 'BLK-1203', category: 'Liquids' }), '5,800 L'),
-  tpl('water-bulk', makeBulkLiquidSpec('water', 7800, { name: 'Water, bulk 7,800 L', sku: 'BLK-0001', category: 'Liquids' }), '7,800 L'),
-  tpl('milk-bulk', makeBulkLiquidSpec('milk', 7800, { name: 'Milk, bulk 7,800 L (chilled)', sku: 'BLK-0103', category: 'Liquids' }), '7,800 L'),
-  tpl('palm-oil-bulk', makeBulkLiquidSpec('palm-oil', 7700, { name: 'Palm oil, bulk 7,700 L', sku: 'BLK-0910', category: 'Liquids' }), '7,700 L'),
+  tpl('diesel-bulk', makeBulkSpec('diesel', 7700, { name: 'Diesel, bulk 7,700 L', sku: 'BLK-1202', category: 'Liquids' }), '7,700 L'),
+  tpl('gasoline-bulk', makeBulkSpec('gasoline', 5800, { name: 'Gasoline, bulk 5,800 L', sku: 'BLK-1203', category: 'Liquids' }), '5,800 L'),
+  tpl('water-bulk', makeBulkSpec('water', 7800, { name: 'Water, bulk 7,800 L', sku: 'BLK-0001', category: 'Liquids' }), '7,800 L'),
+  tpl('milk-bulk', makeBulkSpec('milk', 7800, { name: 'Milk, bulk 7,800 L (chilled)', sku: 'BLK-0103', category: 'Liquids' }), '7,800 L'),
+  tpl('palm-oil-bulk', makeBulkSpec('palm-oil', 7700, { name: 'Palm oil, bulk 7,700 L', sku: 'BLK-0910', category: 'Liquids' }), '7,700 L'),
+
+  // Dry bulk: dump-truck loads, each legal on an empty tronton dump truck (6×4, 15 t payload) -------
+  tpl('sand-wet-bulk', makeBulkSpec('sand-wet', 7800, { name: 'Sand (wet), 7.8 m³ tronton load', sku: 'AGG-1900', category: 'Dry bulk' }), '7.8 m³'),
+  tpl('sand-dry-bulk', makeBulkSpec('sand-dry', 9000, { name: 'Sand (dry), 9 m³', sku: 'AGG-1600', category: 'Dry bulk' }), '9 m³'),
+  tpl('gravel-bulk', makeBulkSpec('gravel', 9000, { name: 'Gravel / split, 9 m³', sku: 'AGG-1550', category: 'Dry bulk' }), '9 m³'),
+  tpl('soil-bulk', makeBulkSpec('soil', 11000, { name: 'Soil (loose), 11 m³', sku: 'AGG-1300', category: 'Dry bulk' }), '11 m³'),
+  tpl('coal-bulk', makeBulkSpec('coal', 16000, { name: 'Coal, 16 m³', sku: 'MIN-0850', category: 'Dry bulk' }), '16 m³'),
+  tpl('nickel-ore-bulk', makeBulkSpec('nickel-ore', 9000, { name: 'Nickel ore, 9 m³', sku: 'MIN-1600', category: 'Dry bulk' }), '9 m³'),
+  tpl('palm-ffb-bulk', makeBulkSpec('palm-ffb', 16000, { name: 'Palm fruit bunches (TBS), 16 m³', sku: 'AGR-0500', category: 'Dry bulk' }), '16 m³'),
+  tpl('paddy-bulk', makeBulkSpec('paddy', 16000, { name: 'Paddy (gabah), 16 m³', sku: 'AGR-0580', category: 'Dry bulk' }), '16 m³'),
 ];

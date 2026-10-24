@@ -1,7 +1,7 @@
 import { useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { MeshBasicMaterial, Plane, Raycaster, Vector2, Vector3, type Camera } from 'three';
-import { allowedOrientations, boxCenter, expandUnits, isBulkLiquid, orientedSize, placementBox } from '../domain/geometry';
+import { allowedOrientations, boxCenter, expandUnits, isBulk, orientedSize, placementBox } from '../domain/geometry';
 import type { Id, ItemSpec, Orientation, Placement, Vehicle } from '../domain/types';
 import { validateMove } from '../rules';
 import { useStore } from '../state/store';
@@ -228,14 +228,19 @@ export function useDragController(vehicle: Vehicle, draggable: boolean): (unitId
         return;
       }
       const v = vehicleRef.current;
-      const bulk = isBulkLiquid(unit.spec);
-      if (bulk !== (v.kind === 'tanker')) {
-        store.toast(bulk ? `Can't place ${unit.spec.name} here: bulk liquid needs a tanker compartment` : `Can't place ${unit.spec.name} here: a tanker carries only bulk liquids`, 'error');
+      const bulk = isBulk(unit.spec);
+      if (bulk !== !!v.bulk) {
+        store.toast(
+          bulk
+            ? `Can't place ${unit.spec.name} here: bulk ${unit.spec.material?.state === 'solid' ? 'material needs a dump truck body' : 'liquid needs a tanker compartment'}`
+            : `Can't place ${unit.spec.name} here: a ${v.bulk?.kind === 'tipper' ? 'dump truck' : 'tanker'} carries only bulk material`,
+          'error',
+        );
         return;
       }
       const p = pointerToCargo(toNdc(ev.clientX, ev.clientY, new Vector2()), v.cargo.w / 2, bulk ? v.cargo.h / 2 : 0);
       if (!p || p.x < -1 || p.x > v.cargo.l + 1 || p.y < -1 || p.y > v.cargo.w + 1) {
-        store.toast(bulk ? `Drop ${unit.spec.name} onto a tank compartment` : `Drop ${unit.spec.name} onto the cargo floor`, 'error');
+        store.toast(bulk ? `Drop ${unit.spec.name} onto ${v.bulk?.kind === 'tipper' ? 'the dump body' : 'a tank compartment'}` : `Drop ${unit.spec.name} onto the cargo floor`, 'error');
         return;
       }
       if (bulk) {

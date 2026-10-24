@@ -71,6 +71,9 @@ export function niceTicks(max: number, target = 5): number[] {
 /** Lower-case first letter for running text ("Drive tandem" -> "drive tandem"). */
 export const lowerFirst = (s: string): string => (s ? s[0].toLowerCase() + s.slice(1) : s);
 
+/** "1 fill", "3 fills": the count with the noun in singular or plural. */
+export const countLabel = (n: number, singular: string, plural = `${singular}s`): string => `${formatNumber(n, 0)} ${n === 1 ? singular : plural}`;
+
 /** "Sat 24 Oct" from an ISO date (YYYY-MM-DD); falls back to the raw text. */
 export function formatPlanDate(iso: string): string {
   const d = new Date(`${iso}T00:00:00`);

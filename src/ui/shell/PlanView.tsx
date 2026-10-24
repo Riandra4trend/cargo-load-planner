@@ -48,10 +48,10 @@ export function PlanView() {
         <div ref={ref} className="w-full">
           {width > 0 && (
             <>
-              {(vehicle.tank ? (['side', 'top'] as const) : (['top', 'side'] as const)).map((mode, i) => (
+              {(vehicle.bulk ? (['side', 'top'] as const) : (['top', 'side'] as const)).map((mode, i) => (
                 <div key={mode} className={i > 0 ? 'mt-4' : ''}>
                   <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted">
-                    {mode === 'side' ? (vehicle.tank ? 'Tank compartments (side)' : 'Side elevation (left side)') : vehicle.tank ? 'Top view' : 'Floor plan (top)'}
+                    {mode === 'side' ? (vehicle.bulk ? `${vehicle.bulk.kind === 'tipper' ? 'Dump body' : 'Tank compartments'} (side)` : 'Side elevation (left side)') : vehicle.bulk ? 'Top view' : 'Floor plan (top)'}
                   </h3>
                   <PlanDiagram plan={plan} vehicleId={vehicle.id} mode={mode} width={width} selection={selection} onSelect={(ids) => select(ids)} />
                 </div>

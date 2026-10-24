@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createTankerSeedPlan, makeBulkLiquidSpec, makeSpec } from '../data/seed';
+import { createTankerSeedPlan, createTipperSeedPlan, makeBulkSpec, makeSpec } from '../data/seed';
 import { createVehicle } from '../domain/presets';
 import { defaultSettings } from '../domain/settings';
 import type { CargoLine, Plan } from '../domain/types';
@@ -24,7 +24,7 @@ function planWith(presetIds: string[], lines: CargoLine[]): Plan {
   };
 }
 
-const fill = (id: string, liquidId: string, litres: number, stop = 1): CargoLine => ({ id, spec: makeBulkLiquidSpec(liquidId, litres), quantity: 1, stopId: `s${stop}`, priority: 'normal' });
+const fill = (id: string, liquidId: string, litres: number, stop = 1): CargoLine => ({ id, spec: makeBulkSpec(liquidId, litres), quantity: 1, stopId: `s${stop}`, priority: 'normal' });
 
 function run(plan: Plan, opts: { keepExisting?: boolean; maxIterations?: number } = {}) {
   const vehicleIds = plan.vehicles.map((v) => v.id);
@@ -92,7 +92,7 @@ describe('tanker optimisation', () => {
     expect(reasons(['tanker-water-8k'], [fill('m', 'milk', 3000)])).toEqual(['Needs an insulated tank']);
     expect(reasons(['tanker-semi-32k'], [fill('l', 'lpg', 3000)])).toEqual(['Needs a pressurised tank']);
     expect(reasons(['tanker-semi-32k'], [fill('d', 'diesel', 9000)])).toEqual(['No free compartment large enough']);
-    const toxic: CargoLine = { ...fill('t', 'diesel', 3000), spec: makeBulkLiquidSpec('diesel', 3000, { name: 'Toxic gas', hazmat: { unNumber: 'UN0000', hazClass: '2.3' } }) };
+    const toxic: CargoLine = { ...fill('t', 'diesel', 3000), spec: makeBulkSpec('diesel', 3000, { name: 'Toxic gas', hazmat: { unNumber: 'UN0000', hazClass: '2.3' } }) };
     const hazmat = reasons(['tanker-semi-32k'], [fill('g', 'gasoline', 5000), toxic]);
     expect(hazmat).toHaveLength(1);
     expect(hazmat[0]).toMatch(/^Hazmat conflict with (Gasoline \(bensin\)|Toxic gas)$/);
@@ -106,7 +106,7 @@ describe('findPlacementFor bulk', () => {
     const plan = createTankerSeedPlan();
     delete plan.placements['line-diesel-3#0'];
     const p = findPlacementFor(plan, 'line-diesel-3#0', 'veh-1');
-    expect(p).toEqual({ unitId: 'line-diesel-3#0', vehicleId: 'veh-1', compartmentId: 'c5', pos: { x: plan.vehicles[0].tank!.compartments[4].fromX, y: 0, z: 0 }, orient: 0 });
+    expect(p).toEqual({ unitId: 'line-diesel-3#0', vehicleId: 'veh-1', compartmentId: 'c5', pos: { x: plan.vehicles[0].bulk!.compartments[4].fromX, y: 0, z: 0 }, orient: 0 });
     expect(validateMove(plan, p!).ok).toBe(true);
   });
 
@@ -139,5 +139,49 @@ describe('proposeVehicles for bulk liquid', () => {
     expect(fleet).toHaveLength(2);
     expect(fleet[1]).toBe('tanker-rigid-16k');
     expect(fleet[0].startsWith('tanker')).toBe(false);
+  });
+});
+
+describe('dry bulk in dump trucks', () => {
+  it('puts a solid fill into a dump body', () => {
+    const { result, ev } = run(planWith(['id-dump-tronton'], [fill('s', 'sand-dry', 8000)]));
+    expect(result.unplaced).toEqual([]);
+    expect(result.placements['s#0']).toMatchObject({ vehicleId: 'v1', compartmentId: 'body' });
+    expect(ev.violations.filter((v) => v.hard)).toEqual([]);
+  });
+
+  it('needs a dump truck, and a body large enough', () => {
+    const reasons = (presetIds: string[], lines: CargoLine[]) => run(planWith(presetIds, lines)).result.unplaced.map((u) => u.reason);
+    expect(reasons(['tanker-semi-32k'], [fill('s', 'sand-wet', 5000)])).toEqual(['Needs a dump truck']);
+    expect(reasons(['eu-rigid-18'], [fill('s', 'sand-wet', 5000)])).toEqual(['Needs a dump truck']);
+    expect(reasons(['id-dump-tronton'], [fill('s', 'sand-dry', 20_000)])).toEqual(['No dump body large enough']);
+    expect(reasons(['id-dump-tronton'], [fill('d', 'diesel', 5000)])).toEqual(['Needs a tanker']);
+  });
+
+  it('sends liquids to tankers and solids to dump trucks', () => {
+    const { result } = run(planWith(['id-dump-cdd', 'tanker-rigid-16k'], [fill('s', 'gravel', 2500), fill('d', 'diesel', 3800)]));
+    expect(result.unplaced).toEqual([]);
+    expect(result.placements['s#0'].vehicleId).toBe('v1');
+    expect(result.placements['d#0'].vehicleId).toBe('v2');
+  });
+
+  it('places both fills of the tipper seed (the overload stays a soft violation)', () => {
+    const plan = createTipperSeedPlan();
+    const { result, ev } = run(plan);
+    expect(result.unplaced).toEqual([]);
+    expect(ev.violations.filter((v) => v.hard)).toEqual([]);
+  });
+
+  it('findPlacementFor returns the dump body', () => {
+    const plan = planWith(['id-dump-tronton'], [fill('s', 'gravel', 6000)]);
+    expect(findPlacementFor(plan, 's#0', 'v1')).toEqual({ unitId: 's#0', vehicleId: 'v1', compartmentId: 'body', pos: { x: 0, y: 0, z: 0 }, orient: 0 });
+    expect(findPlacementFor(planWith(['id-dump-tronton'], [fill('d', 'diesel', 3000)]), 'd#0', 'v1')).toBeNull();
+  });
+
+  it('proposeVehicles: the smallest dump truck that carries the fill legally, else the largest', () => {
+    // 2.5 m³ gravel is legal on the CDD dump truck (seed veh-2).
+    expect(proposeVehicles(planWith([], [fill('g', 'gravel', 2500)]))).toEqual(['id-dump-cdd']);
+    // 10 m³ wet sand = 19 t: the CDD body holds 4.6 m³ and the tronton only 7.9 m³ legally (payload), so the largest, the tronton.
+    expect(proposeVehicles(planWith([], [fill('s', 'sand-wet', 10_000)]))).toEqual(['id-dump-tronton']);
   });
 });

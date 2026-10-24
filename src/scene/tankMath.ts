@@ -1,4 +1,4 @@
-import type { Hazmat, TankCompartment, Vehicle } from '../domain/types';
+import type { Hazmat, Compartment, Vehicle } from '../domain/types';
 
 /** Fraction of an ellipse's area below a horizontal line at normalised height u ∈ [-1, 1] (centre = 0). */
 function segmentFraction(u: number): number {
@@ -33,7 +33,7 @@ export function chordWidth(level: number, width: number, height: number): number
 
 /** Depth of the tank's end heads: hemispherical on pressure vessels, shallow dished ends otherwise. */
 export function capDepth(v: Vehicle): number {
-  return v.tank?.pressurised ? Math.min(v.cargo.w, v.cargo.h) / 2 : Math.min(0.24, v.cargo.h * 0.14);
+  return v.bulk?.pressurised ? Math.min(v.cargo.w, v.cargo.h) / 2 : Math.min(0.24, v.cargo.h * 0.14);
 }
 
 /**
@@ -42,12 +42,12 @@ export function capDepth(v: Vehicle): number {
  */
 export function tankBarrel(v: Vehicle): { x0: number; x1: number; head: number } {
   const head = capDepth(v);
-  return v.tank?.pressurised ? { x0: head, x1: v.cargo.l - head, head } : { x0: 0, x1: v.cargo.l, head };
+  return v.bulk?.pressurised ? { x0: head, x1: v.cargo.l - head, head } : { x0: 0, x1: v.cargo.l, head };
 }
 
 /** Compartment of a tanker at cargo x (clamped to the first / last compartment beyond the ends). */
-export function compartmentAtX(v: Vehicle, x: number): TankCompartment | undefined {
-  const list = v.tank?.compartments ?? [];
+export function compartmentAtX(v: Vehicle, x: number): Compartment | undefined {
+  const list = v.bulk?.compartments ?? [];
   if (!list.length) return undefined;
   return list.find((c) => x >= c.fromX && x < c.toX) ?? (x < list[0].fromX ? list[0] : list[list.length - 1]);
 }

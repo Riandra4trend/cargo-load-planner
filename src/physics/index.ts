@@ -1,6 +1,7 @@
+import { maxFillPct } from '../domain/materials';
 import { sliderPositions, vehicleTareKg } from '../domain/presets';
 import { kgToLb, M_PER_FT } from '../domain/units';
-import type { AxleGroup, AxleLoad, AxleState, AxleStatus, BridgeCheck, CurvePoint, Id, StageResult, Stop, Vec3, Vehicle } from '../domain/types';
+import type { AxleGroup, AxleLoad, AxleState, AxleStatus, BridgeCheck, Compartment, CurvePoint, Id, MaterialContents, StageResult, Stop, Vec3, Vehicle } from '../domain/types';
 
 /**
  * Vehicle statics. Every axle group's load is affine in the cargo: load_i = tare_i + Σ kg_j · share_i(x_j).
@@ -177,17 +178,16 @@ export interface Remaining {
 }
 
 /**
- * Extra weight that could still be added at the current cargo COG before the first limit is hit.
- * When a limit is already broken the capacity is 0 and the worst broken limit is named
- * (overloaded group first, then the gross limit, then a minimum-share shortfall).
+ * Extra weight that could still be added at cargo position `x` (default: the current cargo COG) before
+ * the first limit is hit. When a limit is already broken the capacity is 0 and the worst broken limit is
+ * named (overloaded group first, then the gross limit, then a minimum-share shortfall).
  */
-export function remainingCapacity(v: Vehicle, state: AxleState): Remaining {
+export function remainingCapacity(v: Vehicle, state: AxleState, x: number = state.cog?.x ?? v.cargo.l / 2): Remaining {
   const over = state.axles.filter((a) => a.status === 'over').sort((a, b) => b.ratio - a.ratio)[0];
   if (over) return { kg: 0, limitedBy: over.label };
   if (state.grossOver) return { kg: 0, limitedBy: 'Gross weight' };
   const under = state.axles.find((a) => a.status === 'under');
   if (under) return { kg: 0, limitedBy: `${under.label} minimum` };
-  const x = state.cog?.x ?? v.cargo.l / 2;
   const sh = loadShares(v, x);
   let best = v.payloadKg - state.cargoKg;
   let by = 'Payload';
@@ -215,6 +215,20 @@ export function remainingCapacity(v: Vehicle, state: AxleState): Remaining {
     }
   });
   return { kg: Math.max(0, best), limitedBy: by };
+}
+
+/**
+ * Largest legal fill of a bulk compartment for a material: the volume whose weight can go at the
+ * compartment centre on top of the other cargo (departure loads) without breaking a payload, gross or
+ * axle limit, capped by the compartment capacity at the material's max fill. `limitedBy` names the
+ * binding limit ("Capacity", "Payload", "Gross weight" or an axle group).
+ */
+export function maxLegalFill(v: Vehicle, others: readonly MassPoint[], c: Compartment, material: Pick<MaterialContents, 'materialId' | 'state' | 'densityKgPerL'>): { litres: number; limitedBy: string } {
+  const capacityL = (c.capacityL * maxFillPct(material.materialId, material.state)) / 100;
+  if (!(material.densityKgPerL > 0)) return { litres: capacityL, limitedBy: 'Capacity' };
+  const room = remainingCapacity(v, computeAxleState(v, others), (c.fromX + c.toX) / 2);
+  const byWeightL = room.kg / material.densityKgPerL;
+  return byWeightL < capacityL ? { litres: byWeightL, limitedBy: room.limitedBy } : { litres: capacityL, limitedBy: 'Capacity' };
 }
 
 /** Left/right cargo imbalance as a fraction: 0 = centred, 1 = everything on one wall. */

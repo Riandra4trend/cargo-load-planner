@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { createTankerSeedPlan, makeBulkLiquidSpec, makeSpec } from '../data/seed';
+import { createTankerSeedPlan, createTipperSeedPlan, makeBulkSpec, makeSpec } from '../data/seed';
 import { createVehicle } from '../domain/presets';
 import { buildHazmatMatrix, defaultSettings } from '../domain/settings';
 import type { ItemSpec, Placement, Plan, Violation, ViolationKind } from '../domain/types';
 import { evaluatePlan } from '../state/evaluate';
 import { validateMove } from '.';
-import { withCompartment } from './tank';
+import { withCompartment } from './bulk';
 
 interface Fill {
   key: string;
@@ -15,7 +15,7 @@ interface Fill {
   stop?: number;
 }
 
-const bulk = (liquidId: string, litres: number, partial: Partial<ItemSpec> = {}) => makeBulkLiquidSpec(liquidId, litres, partial);
+const bulk = (materialId: string, litres: number, partial: Partial<ItemSpec> = {}) => makeBulkSpec(materialId, litres, partial);
 
 /** One vehicle, one single-unit line per fill; unit ids are `${key}#0`. */
 function planWith(presetId: string, fills: Fill[], tweak?: (p: Plan) => void): Plan {
@@ -25,7 +25,7 @@ function planWith(presetId: string, fills: Fill[], tweak?: (p: Plan) => void): P
   for (const f of fills) {
     const id = `${f.key}#0`;
     if (typeof f.at === 'string') {
-      const c = vehicle.tank?.compartments.find((x) => x.id === f.at);
+      const c = vehicle.bulk?.compartments.find((x) => x.id === f.at);
       placements[id] = { unitId: id, vehicleId: 'v1', compartmentId: f.at, pos: { x: c?.fromX ?? 0, y: 0, z: 0 }, orient: 0 };
     } else {
       placements[id] = { unitId: id, vehicleId: 'v1', pos: f.at, orient: 0 };
@@ -48,21 +48,21 @@ function planWith(presetId: string, fills: Fill[], tweak?: (p: Plan) => void): P
 }
 
 const kinds = (plan: Plan, kind: ViolationKind): Violation[] => evaluatePlan(plan).violations.filter((v) => v.kind === kind);
-const tank = (plan: Plan): string[] => kinds(plan, 'tank').map((v) => v.message);
+const hardBulk = (plan: Plan): string[] => kinds(plan, 'bulk').map((v) => v.message);
 
-describe('tanker hard rules', () => {
+describe('bulk hard rules: tankers', () => {
   it('a: bulk fills only go into tanker compartments', () => {
-    expect(tank(planWith('tanker-semi-32k', [{ key: 'd', spec: bulk('diesel', 5000), at: 'c1' }]))).toEqual([]);
-    expect(tank(planWith('eu-rigid-18', [{ key: 'd', spec: bulk('diesel', 5000), at: { x: 0, y: 0, z: 0 } }]))).toEqual([
+    expect(hardBulk(planWith('tanker-semi-32k', [{ key: 'd', spec: bulk('diesel', 5000), at: 'c1' }]))).toEqual([]);
+    expect(hardBulk(planWith('eu-rigid-18', [{ key: 'd', spec: bulk('diesel', 5000), at: { x: 0, y: 0, z: 0 } }]))).toEqual([
       'Diesel (solar): bulk liquid goes into a tanker compartment',
     ]);
-    expect(tank(planWith('tanker-semi-32k', [{ key: 'd', spec: bulk('diesel', 5000), at: 'c9' }]))).toEqual(['Diesel (solar): bulk liquid goes into a tanker compartment']);
+    expect(hardBulk(planWith('tanker-semi-32k', [{ key: 'd', spec: bulk('diesel', 5000), at: 'c9' }]))).toEqual(['Diesel (solar): bulk liquid goes into a tanker compartment']);
   });
 
   it('b: a tanker carries no packaged units', () => {
     const pallet = makeSpec({ name: 'Pallet', dims: { l: 1.2, w: 0.8, h: 1 }, weightKg: 300 });
-    expect(tank(planWith('tanker-semi-32k', [{ key: 'p', spec: pallet, at: { x: 0, y: 0, z: 0 } }]))).toEqual(['Pallet: a tanker only carries bulk liquid']);
-    expect(tank(planWith('eu-rigid-18', [{ key: 'p', spec: pallet, at: { x: 0, y: 0, z: 0 } }]))).toEqual([]);
+    expect(hardBulk(planWith('tanker-semi-32k', [{ key: 'p', spec: pallet, at: { x: 0, y: 0, z: 0 } }]))).toEqual(['Pallet: a tanker only carries bulk liquid']);
+    expect(hardBulk(planWith('eu-rigid-18', [{ key: 'p', spec: pallet, at: { x: 0, y: 0, z: 0 } }]))).toEqual([]);
   });
 
   it('c: one fill per compartment', () => {
@@ -70,15 +70,15 @@ describe('tanker hard rules', () => {
       { key: 'a', spec: bulk('diesel', 3000), at: 'c2' },
       { key: 'b', spec: bulk('gasoline', 3000), at: c2 },
     ]);
-    expect(tank(two('c3'))).toEqual([]);
-    const same = kinds(two('c2'), 'tank');
+    expect(hardBulk(two('c3'))).toEqual([]);
+    const same = kinds(two('c2'), 'bulk');
     expect(same.map((v) => v.message)).toEqual(['Diesel (solar) and Gasoline (bensin) are both in C2']);
     expect(same[0].unitIds.sort()).toEqual(['a#0', 'b#0']);
   });
 
   it('d: max fill boundary (97 % for diesel)', () => {
-    expect(tank(planWith('tanker-semi-32k', [{ key: 'd', spec: bulk('diesel', 7760), at: 'c1' }]))).toEqual([]);
-    const over = kinds(planWith('tanker-semi-32k', [{ key: 'd', spec: bulk('diesel', 7761), at: 'c1' }]), 'tank');
+    expect(hardBulk(planWith('tanker-semi-32k', [{ key: 'd', spec: bulk('diesel', 7760), at: 'c1' }]))).toEqual([]);
+    const over = kinds(planWith('tanker-semi-32k', [{ key: 'd', spec: bulk('diesel', 7761), at: 'c1' }]), 'bulk');
     expect(over.map((v) => v.message)).toEqual(['Diesel (solar) 7,761 L overfills C1: max 7,760 L (97 % of 8,000 L)']);
     expect(over[0].unitIds).toEqual(['d#0']);
   });
@@ -88,14 +88,14 @@ describe('tanker hard rules', () => {
       { key: 'd', spec: bulk('diesel', 5900), at: 'c2' },
       { key: 'g', spec: bulk('gasoline', 1000), at: 'c3' },
     ]);
-    const over = kinds(plan, 'tank')[0];
+    const over = kinds(plan, 'bulk')[0];
     expect(over.fix?.action).toEqual({ type: 'compartment', unitId: 'd#0', vehicleId: 'v1', compartmentId: 'c1' });
     expect(over.fix?.label).toBe('Move Diesel (solar) to C1');
   });
 
   it('e: food needs a food-grade tank and must not share it with non-food', () => {
-    expect(tank(planWith('tanker-water-8k', [{ key: 'w', spec: bulk('drinking-water', 7000), at: 'c1' }]))).toEqual([]);
-    expect(tank(planWith('tanker-semi-32k', [{ key: 'w', spec: bulk('drinking-water', 5000), at: 'c2' }]))).toEqual([
+    expect(hardBulk(planWith('tanker-water-8k', [{ key: 'w', spec: bulk('drinking-water', 7000), at: 'c1' }]))).toEqual([]);
+    expect(hardBulk(planWith('tanker-semi-32k', [{ key: 'w', spec: bulk('drinking-water', 5000), at: 'c2' }]))).toEqual([
       'Drinking water is a foodstuff: Fuel tanker 32,000 L (semi-trailer) does not have a food-grade tank',
     ]);
     const mixed = (other: string) =>
@@ -103,19 +103,19 @@ describe('tanker hard rules', () => {
         { key: 'a', spec: bulk('palm-oil', 7000), at: 'c1' },
         { key: 'b', spec: bulk(other, 7000), at: 'c3' },
       ]);
-    expect(tank(mixed('vegetable-oil'))).toEqual([]);
-    expect(tank(mixed('water'))).toEqual(['Food Palm oil (CPO) and non-food Water share a food-grade tank']);
+    expect(hardBulk(mixed('vegetable-oil'))).toEqual([]);
+    expect(hardBulk(mixed('water'))).toEqual(['Food Palm oil (CPO) and non-food Water share a food-grade tank']);
   });
 
   it('f: chilled bulk liquid needs an insulated tank', () => {
-    expect(tank(planWith('tanker-food-24k', [{ key: 'm', spec: bulk('milk', 7000), at: 'c1' }]))).toEqual([]);
-    expect(tank(planWith('tanker-water-8k', [{ key: 'm', spec: bulk('milk', 7000), at: 'c1' }]))).toEqual(['Milk is chilled: it needs an insulated tank']);
+    expect(hardBulk(planWith('tanker-food-24k', [{ key: 'm', spec: bulk('milk', 7000), at: 'c1' }]))).toEqual([]);
+    expect(hardBulk(planWith('tanker-water-8k', [{ key: 'm', spec: bulk('milk', 7000), at: 'c1' }]))).toEqual(['Milk is chilled: it needs an insulated tank']);
   });
 
   it('pressure vessels carry liquefied gas only', () => {
-    expect(tank(planWith('tanker-lpg-44k', [{ key: 'l', spec: bulk('lpg', 37_400), at: 'c1' }]))).toEqual([]);
-    expect(tank(planWith('tanker-semi-32k', [{ key: 'l', spec: bulk('lpg', 5000), at: 'c2' }]))).toEqual(['LPG (liquefied, pressurised) needs a pressurised tank']);
-    expect(tank(planWith('tanker-lpg-44k', [{ key: 'd', spec: bulk('diesel', 20_000), at: 'c1' }]))).toEqual(['Diesel (solar) cannot go into a pressurised tank']);
+    expect(hardBulk(planWith('tanker-lpg-44k', [{ key: 'l', spec: bulk('lpg', 37_400), at: 'c1' }]))).toEqual([]);
+    expect(hardBulk(planWith('tanker-semi-32k', [{ key: 'l', spec: bulk('lpg', 5000), at: 'c2' }]))).toEqual(['LPG (liquefied, pressurised) needs a pressurised tank']);
+    expect(hardBulk(planWith('tanker-lpg-44k', [{ key: 'd', spec: bulk('diesel', 20_000), at: 'c1' }]))).toEqual(['Diesel (solar) cannot go into a pressurised tank']);
   });
 
   it('g: hazmat never together, separate not in adjacent compartments', () => {
@@ -124,7 +124,7 @@ describe('tanker hard rules', () => {
       { key: 'a', spec: toxicGas, at: 'c1' },
       { key: 'b', spec: bulk('gasoline', 3000), at: 'c5' },
     ]);
-    expect(tank(never)).toEqual(['Toxic liquid and Gasoline (bensin) must not travel in one tanker (hazmat classes 2.3 / 3)']);
+    expect(hardBulk(never)).toEqual(['Toxic liquid and Gasoline (bensin) must not travel in one vehicle (hazmat classes 2.3 / 3)']);
     const separate = (c: string) =>
       planWith(
         'tanker-semi-32k',
@@ -136,20 +136,20 @@ describe('tanker hard rules', () => {
           p.settings.hazmatMatrix = buildHazmatMatrix([['3', '8', 'separate']]);
         },
       );
-    expect(tank(separate('c4'))).toEqual([]);
-    expect(tank(separate('c3'))).toEqual(['Diesel (solar) (C2) and Sulfuric acid 98 % (C3) must not be in adjacent compartments (hazmat classes 3 / 8)']);
+    expect(hardBulk(separate('c4'))).toEqual([]);
+    expect(hardBulk(separate('c3'))).toEqual(['Diesel (solar) (C2) and Sulfuric acid 98 % (C3) must not be in adjacent compartments (hazmat classes 3 / 8)']);
   });
 
   it('h: packaged liquid within its container capacity', () => {
     const drum = (volumeL: number) =>
-      makeSpec({ name: 'Diesel drum', packaging: 'drum', dims: { l: 0.6, w: 0.6, h: 0.9 }, weightKg: 200, liquid: { liquidId: 'diesel', name: 'Diesel (solar)', densityKgPerL: 0.84, volumeL } });
+      makeSpec({ name: 'Diesel drum', packaging: 'drum', dims: { l: 0.6, w: 0.6, h: 0.9 }, weightKg: 200, material: { materialId: 'diesel', name: 'Diesel (solar)', state: 'liquid', densityKgPerL: 0.84, volumeL } });
     // Drum brim capacity 216 L, diesel max fill 97 % = 209.52 L.
-    expect(tank(planWith('eu-rigid-18', [{ key: 'd', spec: drum(209.52), at: { x: 0, y: 0, z: 0 } }]))).toEqual([]);
-    expect(tank(planWith('eu-rigid-18', [{ key: 'd', spec: drum(210), at: { x: 0, y: 0, z: 0 } }]))).toEqual(['Diesel drum: 210.0 L overfills its container: max 209.5 L (97 % of 216 L)']);
+    expect(hardBulk(planWith('eu-rigid-18', [{ key: 'd', spec: drum(209.52), at: { x: 0, y: 0, z: 0 } }]))).toEqual([]);
+    expect(hardBulk(planWith('eu-rigid-18', [{ key: 'd', spec: drum(210), at: { x: 0, y: 0, z: 0 } }]))).toEqual(['Diesel drum: 210.0 L overfills its container: max 209.5 L (97 % of 216 L)']);
     const custom = (volumeL: number) =>
-      makeSpec({ name: 'Can', dims: { l: 0.5, w: 0.5, h: 0.5 }, weightKg: 90, liquid: { liquidId: 'diesel', name: 'Diesel (solar)', densityKgPerL: 0.84, volumeL, containerCapacityL: 100 } });
-    expect(tank(planWith('eu-rigid-18', [{ key: 'c', spec: custom(97), at: { x: 0, y: 0, z: 0 } }]))).toEqual([]);
-    expect(tank(planWith('eu-rigid-18', [{ key: 'c', spec: custom(97.5), at: { x: 0, y: 0, z: 0 } }]))).toHaveLength(1);
+      makeSpec({ name: 'Can', dims: { l: 0.5, w: 0.5, h: 0.5 }, weightKg: 90, material: { materialId: 'diesel', name: 'Diesel (solar)', state: 'liquid', densityKgPerL: 0.84, volumeL, containerCapacityL: 100 } });
+    expect(hardBulk(planWith('eu-rigid-18', [{ key: 'c', spec: custom(97), at: { x: 0, y: 0, z: 0 } }]))).toEqual([]);
+    expect(hardBulk(planWith('eu-rigid-18', [{ key: 'c', spec: custom(97.5), at: { x: 0, y: 0, z: 0 } }]))).toHaveLength(1);
   });
 
   it('bulk fills take no part in geometric checks', () => {
@@ -202,7 +202,7 @@ describe('tanker seed', () => {
     if (fix?.action.type !== 'compartment') return;
     const v = plan.vehicles[0];
     const { unitId, compartmentId } = fix.action;
-    const c = v.tank!.compartments.find((x) => x.id === compartmentId)!;
+    const c = v.bulk!.compartments.find((x) => x.id === compartmentId)!;
     const fixed = { ...plan, placements: withCompartment(plan.placements, unitId, v, c) };
     const after = evaluatePlan(fixed).violations;
     expect(after.filter((x) => x.kind === 'axle-max' || x.kind === 'axle-min')).toEqual([]);
@@ -250,5 +250,59 @@ describe('validateMove for bulk fills', () => {
   it('checks food grade, insulation and pressure of the target tank', () => {
     const milk = planWith('tanker-semi-32k', [{ key: 'm', spec: bulk('milk', 5000), at: 'c2' }]);
     expect(validateMove(milk, into('m#0', 'c3', 'v1')).reasons).toEqual(['Needs a food-grade tank', 'Needs an insulated tank']);
+  });
+});
+
+describe('bulk hard rules: dry bulk and dump trucks', () => {
+  const pallet = makeSpec({ name: 'Pallet', dims: { l: 1.2, w: 0.8, h: 1 }, weightKg: 300 });
+
+  it('state matching: solids need a dump body, liquids a tank', () => {
+    expect(hardBulk(planWith('id-dump-tronton', [{ key: 's', spec: bulk('sand-dry', 8000), at: 'body' }]))).toEqual([]);
+    expect(hardBulk(planWith('tanker-semi-32k', [{ key: 's', spec: bulk('sand-wet', 5000), at: 'c1' }]))).toEqual(['Sand (wet) needs a dump truck body']);
+    expect(hardBulk(planWith('id-dump-tronton', [{ key: 'd', spec: bulk('diesel', 5000), at: 'body' }]))).toEqual(["Diesel (solar) can't go in a dump body"]);
+    expect(hardBulk(planWith('eu-rigid-18', [{ key: 's', spec: bulk('sand-dry', 5000), at: { x: 0, y: 0, z: 0 } }]))).toEqual([
+      'Sand (dry): dry bulk goes into a dump truck body',
+    ]);
+    expect(hardBulk(planWith('id-dump-tronton', [{ key: 'p', spec: pallet, at: { x: 0, y: 0, z: 0 } }]))).toEqual(['Pallet: a dump truck only carries bulk material']);
+  });
+
+  it('max fill is 100 % of the struck body volume (level with the sides)', () => {
+    // id-dump-tronton body 5.8 × 2.3 × 1.2 m = 16,008 L.
+    expect(hardBulk(planWith('id-dump-tronton', [{ key: 's', spec: bulk('sand-dry', 16_008), at: 'body' }]))).toEqual([]);
+    expect(hardBulk(planWith('id-dump-tronton', [{ key: 's', spec: bulk('sand-dry', 16_010), at: 'body' }]))).toHaveLength(1);
+    expect(hardBulk(planWith('id-dump-tronton', [{ key: 's', spec: bulk('sand-dry', 17_000), at: 'body' }]))).toEqual([
+      'Sand (dry) 17.0 m³ overfills the dump body: max 16.0 m³ (level with the sides)',
+    ]);
+  });
+
+  it('no surge, food-grade, insulation or pressure rules for dry bulk', () => {
+    const plan = planWith('id-dump-tronton', [{ key: 's', spec: bulk('sand-dry', 5000), at: 'body' }]);
+    expect(kinds(plan, 'surge')).toEqual([]);
+    expect(hardBulk(plan)).toEqual([]);
+  });
+
+  it('overload is left to the payload, gross and axle checks (the ODOL seed)', () => {
+    const ev = evaluatePlan(createTipperSeedPlan());
+    expect(ev.violations.filter((v) => v.hard)).toEqual([]);
+    const tronton = ev.violations.filter((v) => v.vehicleId === 'veh-1').map((v) => v.kind);
+    expect(tronton).toContain('payload');
+    expect(tronton).toContain('gross');
+    expect(ev.violations.filter((v) => v.vehicleId === 'veh-2')).toEqual([]);
+  });
+
+  it('validateMove mirrors the state rules', () => {
+    const plan = planWith('id-dump-tronton', [{ key: 's', spec: bulk('sand-dry', 5000), at: 'body' }]);
+    const mixed: Plan = {
+      ...plan,
+      vehicles: [...plan.vehicles, createVehicle('tanker-semi-32k', 'tank'), createVehicle('eu-rigid-18', 'rigid')],
+      lines: [...plan.lines, { id: 'd', spec: bulk('diesel', 3000), quantity: 1, stopId: 's1', priority: 'normal' }, { id: 'p', spec: pallet, quantity: 1, stopId: 's1', priority: 'normal' }],
+    };
+    const into = (unitId: string, vehicleId: string, compartmentId?: string): Placement => ({ unitId, vehicleId, compartmentId, pos: { x: 0, y: 0, z: 0 }, orient: 0 });
+    expect(validateMove(mixed, into('s#0', 'tank', 'c1')).reasons).toEqual(['Needs a dump truck body']);
+    expect(validateMove(mixed, into('d#0', 'v1', 'body')).reasons).toEqual(["A liquid can't go in a dump body"]);
+    expect(validateMove(mixed, into('p#0', 'v1')).reasons).toEqual(['A dump truck only carries bulk material']);
+    expect(validateMove(mixed, into('s#0', 'rigid')).reasons).toEqual(['Dry bulk goes into a dump truck body']);
+    expect(validateMove(mixed, into('s#0', 'v1', 'body')).ok).toBe(true);
+    expect(validateMove(mixed, into('d#0', 'tank', 'c2')).ok).toBe(true);
   });
 });

@@ -4,7 +4,7 @@
  * legal layout with extreme-point placement. Every candidate passes the shared hard checks of the
  * rules engine; LIFO conflicts are avoided whenever a conflict-free spot exists.
  */
-import { allowedOrientations, expandUnits, isBulkLiquid, orientedSize, placementBox, placementCog } from '../domain/geometry';
+import { allowedOrientations, expandUnits, isBulk, orientedSize, placementBox, placementCog } from '../domain/geometry';
 import { vehicleTareKg } from '../domain/presets';
 import type { CargoUnit, Id, Orientation, Placement, Plan, TempClass, TempZone, Vec3, Vehicle } from '../domain/types';
 import { Arrangement, makeSolid, type Solid } from '../rules/arrangement';
@@ -96,8 +96,8 @@ export function buildProblem(req: OptimiseRequest): Problem {
   const fixed: Solid[][] = vehicles.map(() => []);
   const fixedPlacements: Placement[] = [];
   for (const u of expandUnits(plan)) {
-    // Bulk liquid fills go to tanker compartments (packing/tanks.ts), never onto a floor.
-    if (isBulkLiquid(u.spec)) continue;
+    // Bulk fills go to tank compartments / dump bodies (packing/bulk.ts), never onto a floor.
+    if (isBulk(u.spec)) continue;
     const p = plan.placements[u.id];
     const vi = p ? vIndex.get(p.vehicleId) : undefined;
     const elsewhere = !!p && vi === undefined && known.has(p.vehicleId);

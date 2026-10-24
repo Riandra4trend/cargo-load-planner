@@ -123,6 +123,14 @@ describe('persistence', () => {
     expect(loadSavedPlan(info.id)).toEqual({ ...plan, id: info.id, name: 'Fuel run' });
   });
 
+  it('migrates liquid templates saved by an older version', () => {
+    const spec = makeSpec({ name: 'Diesel drum', dims: { l: 0.585, w: 0.585, h: 0.88 }, weightKg: 186, packaging: 'drum' });
+    localStorage.setItem(STORAGE_KEYS.library, JSON.stringify([{ id: 'tpl-old', builtIn: false, spec: { ...spec, liquid: { liquidId: 'diesel', name: 'Diesel (solar)', densityKgPerL: 0.84, volumeL: 200 } } }]));
+    const [tpl] = loadLibrary();
+    expect(tpl.spec.material).toEqual({ materialId: 'diesel', name: 'Diesel (solar)', state: 'liquid', densityKgPerL: 0.84, volumeL: 200 });
+    expect('liquid' in tpl.spec).toBe(false);
+  });
+
   it('persists user templates only', () => {
     const spec = makeSpec({ name: 'Crate', dims: { l: 1, w: 1, h: 1 }, weightKg: 100 });
     saveLibrary([

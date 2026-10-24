@@ -1,7 +1,7 @@
 import { Canvas } from '@react-three/fiber';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Box3, type WebGLRenderer } from 'three';
-import { compartmentFill, compartmentOf, isBulkLiquid, orientedSize, placementBox, type Box } from '../domain/geometry';
+import { compartmentFill, compartmentOf, isBulk, orientedSize, placementBox, type Box } from '../domain/geometry';
 import type { Id } from '../domain/types';
 import { axleContributions, axleGroups, computeAxleState } from '../physics';
 import { loadingSequence } from '../sim/sequence';
@@ -20,6 +20,7 @@ import { colorContext, unitColor, type ColorContext } from './palette';
 import { LoadSimulation, simulationLayout, UnloadSimulation } from './Simulation';
 import { dockLayout, type StagingUnit } from './staging';
 import { TankLayer, type TankFill } from './TankLayer';
+import { TipperLayer } from './TipperLayer';
 import { VehicleModel } from './VehicleModel';
 import { vehicleLayout } from './vehicleLayout';
 import { ViewportOverlay } from './ViewportOverlay';
@@ -95,7 +96,7 @@ function SceneContent() {
     for (const u of evaluation.units) {
       const p = plan.placements[u.id];
       if (p?.vehicleId !== vehicle.id) continue;
-      if (p.compartmentId !== undefined || isBulkLiquid(u.spec)) {
+      if (p.compartmentId !== undefined || isBulk(u.spec)) {
         const c = compartmentOf(vehicle, p.compartmentId);
         if (c) fills.push({ unit: u, compartment: c, fill: compartmentFill(u.spec, c) });
       } else items.push({ unit: u, orient: p.orient, box: placementBox(p, u.spec) });
@@ -153,7 +154,7 @@ function SceneContent() {
     const ghosts: Box[] = [];
     for (const u of evaluation.units) {
       const before = diff.base.placements[u.id];
-      if (before?.vehicleId !== vehicle.id || isBulkLiquid(u.spec)) continue;
+      if (before?.vehicleId !== vehicle.id || isBulk(u.spec)) continue;
       const after = diff.preview.placements[u.id];
       const moved = !after || after.vehicleId !== before.vehicleId || after.orient !== before.orient || Math.abs(after.pos.x - before.pos.x) > 1e-6 || Math.abs(after.pos.y - before.pos.y) > 1e-6 || Math.abs(after.pos.z - before.pos.z) > 1e-6;
       if (!moved) continue;
@@ -242,8 +243,9 @@ function SceneContent() {
     <>
       <Lighting centre={sun.centre} radius={sun.radius} />
       <CameraRig view={view} fitBox={fit} fitKey={fitKey} locateUnit={locateUnit} />
-      <VehicleModel vehicle={vehicle} />
-      <DockScene vehicle={vehicle} dock={dock} stops={plan.stops} customers={plan.customers} />
+      <VehicleModel vehicle={vehicle} wingsOpen={animMode === 'load' && vehicle.body === 'wingbox'} />
+      {/* Dump trucks tip at the site: no loading dock behind them (the material pile lands there). */}
+      <DockScene vehicle={vehicle} dock={dock} stops={plan.stops} customers={plan.customers} groundOnly={vehicle.kind === 'tipper'} />
       <CargoLayer
         items={layerItems}
         colors={colorsStable}
@@ -258,6 +260,25 @@ function SceneContent() {
         look={look}
       />
       {dragUnit && <DragGhost spec={dragUnit.spec} color={unitColor(dragUnit, colorsStable)} />}
+      {vehicle.kind === 'tipper' && (
+        <TipperLayer
+          vehicle={vehicle}
+          fill={tankFills[0] ?? null}
+          points={veval.points}
+          colors={colorsStable}
+          highlights={highlights}
+          stops={plan.stops}
+          customers={plan.customers}
+          units={units}
+          animMode={animMode}
+          step={animation.step}
+          playing={animation.playing}
+          speed={animation.speed}
+          sequence={sequence}
+          unloadFrom={unloadFrom}
+          interactive={animMode === 'idle' && !diff && !drag}
+        />
+      )}
       {vehicle.kind === 'tanker' && (
         <TankLayer
           vehicle={vehicle}

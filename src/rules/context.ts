@@ -1,5 +1,5 @@
 /** Per-plan memoised lookups shared by checkPlan, validateMove and the fix suggestions. */
-import { expandUnits, isBulkLiquid } from '../domain/geometry';
+import { expandUnits, isBulk } from '../domain/geometry';
 import type { CargoUnit, Id, Plan, Vehicle } from '../domain/types';
 import { Arrangement, makeSolid } from './arrangement';
 
@@ -46,7 +46,7 @@ export function vehicleArrangement(plan: Plan, vehicle: Vehicle, excludeId: Id |
   for (const p of Object.values(plan.placements)) {
     if (p.vehicleId !== vehicle.id || p.unitId === excludeId) continue;
     const u = units.get(p.unitId);
-    if (u && !isBulkLiquid(u.spec)) solids.push(makeSolid(u, labels.get(u.id) ?? u.spec.name, p));
+    if (u && !isBulk(u.spec)) solids.push(makeSolid(u, labels.get(u.id) ?? u.spec.name, p));
   }
   const arr = Arrangement.build(vehicle, plan.settings, solids);
   byKey.set(key, arr);

@@ -1,6 +1,6 @@
 import { Crosshair, Minus, Plus, Scale } from 'lucide-react';
 import { useMemo, useState } from 'react';
-import { isBulkLiquid } from '../../domain/geometry';
+import { isBulk } from '../../domain/geometry';
 import { sliderPositions } from '../../domain/presets';
 import { formatLength, formatPercent, formatWeight } from '../../domain/units';
 import type { AxleLoad, AxleState, UnitSystem, Vehicle } from '../../domain/types';
@@ -81,7 +81,7 @@ function AxleBar({
                 return (
                   <li key={c.id} className="flex items-baseline gap-2">
                     <span className="flex-1 truncate text-ink-soft">
-                      {unit ? (isBulkLiquid(unit.spec) ? `${unit.spec.name} · ${evaluation.bayOfUnit[c.id] ?? ''}` : `${unit.spec.name} #${unit.index + 1}`) : c.id}
+                      {unit ? (isBulk(unit.spec) ? `${unit.spec.name} · ${evaluation.bayOfUnit[c.id] ?? ''}` : `${unit.spec.name} #${unit.index + 1}`) : c.id}
                     </span>
                     <span className="num font-mono text-ink">{formatWeight(c.kg, sys)}</span>
                   </li>

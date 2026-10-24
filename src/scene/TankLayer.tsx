@@ -2,9 +2,9 @@ import { useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { Color, DoubleSide, MeshBasicMaterial, MeshStandardMaterial, Plane, Raycaster, Vector2, Vector3, type Group, type Mesh } from 'three';
 import { hazmatColor, heatColor } from '../domain/colors';
-import type { CargoUnit, Customer, Id, Stop, TankCompartment, UnitSystem, Vehicle } from '../domain/types';
-import { liquidColor } from '../domain/liquids';
-import { formatLiquidDensity, formatLitres, formatMass, formatPercent } from '../domain/units';
+import type { CargoUnit, Customer, Id, Stop, Compartment, UnitSystem, Vehicle } from '../domain/types';
+import { materialColor } from '../domain/materials';
+import { formatMaterialDensity, formatLitres, formatMass, formatPercent } from '../domain/units';
 import { validateMove } from '../rules';
 import type { LoadStep } from '../sim/sequence';
 import { useStore } from '../state/store';
@@ -25,7 +25,7 @@ import { vehicleLayout } from './vehicleLayout';
 /** One bulk fill shown in a compartment. */
 export interface TankFill {
   unit: CargoUnit;
-  compartment: TankCompartment;
+  compartment: Compartment;
   /** Volume / brim capacity (0..1+). */
   fill: number;
 }
@@ -166,7 +166,7 @@ interface DragTarget {
 export const TankLayer = memo(function TankLayer(props: TankLayerProps) {
   const { vehicle, fills, colors, highlights, animMode, step, playing, speed, sequence, unloadFrom, interactive } = props;
   const { w, h } = vehicle.cargo;
-  const compartments = useMemo(() => vehicle.tank?.compartments ?? [], [vehicle.tank]);
+  const compartments = useMemo(() => vehicle.bulk?.compartments ?? [], [vehicle.bulk]);
   const barrel = tankBarrel(vehicle);
   const byCompartment = useMemo(() => new Map(fills.map((f) => [f.compartment.id, f])), [fills]);
 
@@ -312,7 +312,7 @@ export const TankLayer = memo(function TankLayer(props: TankLayerProps) {
     if (!interactive) setHovered(null);
   }, [interactive]);
 
-  const handlers = (c: TankCompartment) => ({
+  const handlers = (c: Compartment) => ({
     onPointerMove: (e: ThreeEvent<PointerEvent>) => {
       e.stopPropagation();
       if (interactive && !session.current?.started && hovered !== c.id) hoverCompartment(c.id);
@@ -358,8 +358,8 @@ export const TankLayer = memo(function TankLayer(props: TankLayerProps) {
                 : unitId && highlights.axle.has(unitId)
                   ? OUTLINES.axle
                   : null;
-        const liquidId = f?.unit.spec.liquid?.liquidId ?? 'custom';
-        const liquid = colors.mode === 'weight' && f ? heatColor(colors.maxKg > 0 ? f.unit.spec.weightKg / colors.maxKg : 0) : liquidColor(liquidId);
+        const liquidId = f?.unit.spec.material?.materialId ?? 'custom';
+        const liquid = colors.mode === 'weight' && f ? heatColor(colors.maxKg > 0 ? f.unit.spec.weightKg / colors.maxKg : 0) : materialColor(liquidId);
         const haz = f?.unit.spec.hazmat;
         return (
           <group key={c.id}>
@@ -430,7 +430,7 @@ function CompartmentOutline({ fromX, toX, width, height, material }: { fromX: nu
 }
 
 /** Loading arm from the gantry at the dock face down into the compartment's manhole. */
-function LoadingArm({ vehicle, compartment, dockX }: { vehicle: Vehicle; compartment: TankCompartment | undefined; dockX: number }) {
+function LoadingArm({ vehicle, compartment, dockX }: { vehicle: Vehicle; compartment: Compartment | undefined; dockX: number }) {
   if (!compartment) return null;
   const { w, h } = vehicle.cargo;
   const cx = (compartment.fromX + compartment.toX) / 2;
@@ -445,7 +445,7 @@ function LoadingArm({ vehicle, compartment, dockX }: { vehicle: Vehicle; compart
   );
 }
 
-function CompartmentTooltip({ compartment: c, fill: f, vehicle, stops, customers, units }: { compartment: TankCompartment; fill: TankFill | null } & TankLayerProps) {
+function CompartmentTooltip({ compartment: c, fill: f, vehicle, stops, customers, units }: { compartment: Compartment; fill: TankFill | null } & TankLayerProps) {
   const { w, h } = vehicle.cargo;
   const pos = toThree((c.fromX + c.toX) / 2, w / 2, h + 0.4);
   if (!f) {
@@ -458,14 +458,14 @@ function CompartmentTooltip({ compartment: c, fill: f, vehicle, stops, customers
     );
   }
   const { spec } = f.unit;
-  const liquid = spec.liquid;
+  const liquid = spec.material;
   const stop = stops.find((s) => s.id === f.unit.stopId);
   const customer = customers.find((x) => x.id === stop?.customerId);
   return (
     <SceneLabel position={pos} zIndex={40}>
       <div className="w-max max-w-64 -translate-x-1/2 -translate-y-full rounded-lg border border-line bg-card/95 px-2.5 py-2 text-xs shadow-card">
         <div className="mb-1 flex items-center gap-1.5 font-semibold text-ink">
-          <span className="inline-block h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: liquidColor(liquid?.liquidId ?? 'custom') }} />
+          <span className="inline-block h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: materialColor(liquid?.materialId ?? 'custom') }} />
           <span className="truncate">
             {c.label} · {liquid?.name ?? spec.name}
           </span>
@@ -482,7 +482,7 @@ function CompartmentTooltip({ compartment: c, fill: f, vehicle, stops, customers
           {liquid && (
             <>
               <dt>Density</dt>
-              <dd className="num font-mono text-ink-soft">{formatLiquidDensity(liquid.densityKgPerL, units)}</dd>
+              <dd className="num font-mono text-ink-soft">{formatMaterialDensity(liquid.densityKgPerL, liquid.state, units)}</dd>
             </>
           )}
           <dt>Stop</dt>

@@ -1,4 +1,4 @@
-import type { CargoUnit, Dims, Id, ItemSpec, Orientation, Placement, Plan, TankCompartment, Vec3, Vehicle } from './types';
+import type { CargoUnit, Dims, Id, ItemSpec, Orientation, Placement, Plan, Compartment, Vec3, Vehicle } from './types';
 
 type Axis = keyof Dims;
 
@@ -30,7 +30,7 @@ export function orientedSize(dims: Dims, orient: Orientation): Vec3 {
 
 /** Orientations permitted by the item's rotation rule, upright requirement and shape. */
 export function allowedOrientations(spec: ItemSpec): Orientation[] {
-  if (spec.rotation === 'none' || spec.packaging === 'bulk-liquid') return [0];
+  if (spec.rotation === 'none' || spec.packaging === 'bulk') return [0];
   const uprightOnly = spec.rotation === 'yaw' || spec.keepUpright || spec.shape === 'cylinder-upright';
   return uprightOnly ? [0, 1] : [0, 1, 2, 3, 4, 5];
 }
@@ -81,23 +81,23 @@ export function lineIdOfUnit(unitId: Id): Id {
   return i < 0 ? unitId : unitId.slice(0, i);
 }
 
-/** Bulk liquid fills ride in tanker compartments instead of standing on the floor. */
-export const isBulkLiquid = (spec: ItemSpec): boolean => spec.packaging === 'bulk-liquid';
+/** Loose bulk fills (liquids in tank compartments, dry bulk in tipper bodies) ride in a compartment, not on the floor. */
+export const isBulk = (spec: ItemSpec): boolean => spec.packaging === 'bulk';
 
-export function compartmentOf(v: Vehicle, compartmentId: Id | undefined): TankCompartment | undefined {
-  return compartmentId === undefined ? undefined : v.tank?.compartments.find((c) => c.id === compartmentId);
+export function compartmentOf(v: Vehicle, compartmentId: Id | undefined): Compartment | undefined {
+  return compartmentId === undefined ? undefined : v.bulk?.compartments.find((c) => c.id === compartmentId);
 }
 
-/** Fill of a compartment by a bulk unit, 0..1 of its brim capacity. */
-export function compartmentFill(spec: ItemSpec, c: TankCompartment): number {
-  return c.capacityL > 0 ? (spec.liquid?.volumeL ?? 0) / c.capacityL : 0;
+/** Fill of a compartment by a bulk unit, 0..1 of its capacity. */
+export function compartmentFill(spec: ItemSpec, c: Compartment): number {
+  return c.capacityL > 0 ? (spec.material?.volumeL ?? 0) / c.capacityL : 0;
 }
 
 /**
- * Centre of gravity of a bulk fill: middle of the compartment along x, tank centreline across, and the
- * liquid's centroid height (fill-proportional, ignoring the tank's curved cross-section).
+ * Centre of gravity of a bulk fill: middle of the compartment along x, centreline across, and the
+ * material's centroid height (fill-proportional, ignoring a tank's curved cross-section).
  */
-export function bulkCog(v: Vehicle, c: TankCompartment, spec: ItemSpec): Vec3 {
+export function bulkCog(v: Vehicle, c: Compartment, spec: ItemSpec): Vec3 {
   const fill = Math.min(1, compartmentFill(spec, c));
   return { x: (c.fromX + c.toX) / 2, y: v.cargo.w / 2, z: (fill * v.cargo.h) / 2 };
 }

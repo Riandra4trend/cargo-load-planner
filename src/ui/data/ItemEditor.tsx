@@ -1,18 +1,18 @@
-import { BookmarkPlus, Check, ChevronDown, ChevronUp, CircleAlert, Droplets, Package, PackagePlus, RotateCcw, TriangleAlert, X } from 'lucide-react';
+import { BookmarkPlus, Check, ChevronDown, ChevronUp, CircleAlert, Package, PackagePlus, RotateCcw, Scale, TriangleAlert, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { PACKAGING_KINDS, PACKAGING_PRESETS } from '../../data/packaging';
 import { makeSpec } from '../../data/seed';
 import { TEMP_COLORS, TEMP_LABELS } from '../../domain/colors';
-import { isBulkLiquid, unitIdOf } from '../../domain/geometry';
-import { CUSTOM_LIQUID_ID, liquidColor, liquidDef, liquidWeightKg, maxFillPct, type LiquidDef } from '../../domain/liquids';
+import { isBulk, unitIdOf } from '../../domain/geometry';
+import { CUSTOM_MATERIAL_ID, materialColor, materialDef, materialWeightKg, maxFillPct, type MaterialDef } from '../../domain/materials';
 import { HAZMAT_CLASSES, HAZMAT_CLASS_NAMES } from '../../domain/settings';
-import type { ItemSpec, ItemTemplate, LiquidContents, PackagingKind, PackingGroup, Plan, Shape, TempClass, UnitSystem } from '../../domain/types';
+import type { ItemSpec, ItemTemplate, MaterialContents, MaterialState, PackagingKind, PackingGroup, Plan, Shape, TempClass, UnitSystem } from '../../domain/types';
 import {
   formatArea,
   formatDensity,
   formatLength,
-  formatLiquidDensity,
-  formatLitres,
+  formatMaterialDensity,
+  formatMaterialVolume,
   formatNumber,
   formatVolume,
   formatWeight,
@@ -27,43 +27,61 @@ import { ItemPreview } from '../../scene/ItemPreview';
 import { useStore, type ItemEditorRequest } from '../../state/store';
 import { Button } from '../common/Button';
 import { Chip, ColorDot } from '../common/Chip';
-import { Field, inputClass, LengthInput, LiquidDensityInput, LitresInput, NumberInput, SegmentedControl, Select, TextInput, Toggle, WeightInput } from '../common/fields';
+import { Field, inputClass, LengthInput, MaterialDensityInput, MaterialVolumeInput, NumberInput, SegmentedControl, Select, TextInput, Toggle, WeightInput } from '../common/fields';
 import { Modal } from '../common/Modal';
-import { checkDraft, containerCapacityL, deriveItem, hasErrors, liquidTareKg, type DraftIssues, type LineDraft, type VehicleFit } from './itemChecks';
-import { LiquidBadges, LiquidPicker } from './LiquidPicker';
+import { bestLegalFill, checkDraft, containerCapacityL, deriveItem, hasErrors, materialTareKg, presetVehicleList, vehicleSuits, type DraftIssues, type LineDraft, type VehicleFit } from './itemChecks';
+import { MaterialBadges, MaterialPicker } from './MaterialPicker';
 import { placeOnVehicle, targetVehicleId } from './placement';
 import { StopPicker } from './StopPicker';
 import { TemplatePicker, useAllTemplates } from './TemplatePicker';
 
 const DEFAULT_PALLET_HEIGHT = 0.144;
-/** Default volume of a new bulk fill, litres. */
+/** Default volume of a new bulk fill or load, litres (5,000 L / 5 m³). */
 const DEFAULT_BULK_L = 5000;
 
 type ContainerKind = 'drum' | 'ibc' | 'jerrycan';
-type LiquidMode = ContainerKind | 'other' | 'bulk';
+type MaterialMode = ContainerKind | 'other' | 'bulk';
 const CONTAINERS: ContainerKind[] = ['drum', 'ibc', 'jerrycan'];
 const CONTAINER_NAMES: Record<ContainerKind, string> = { drum: 'Drum', ibc: 'IBC', jerrycan: 'Jerrycan' };
 const isContainer = (k: PackagingKind): k is ContainerKind => (CONTAINERS as PackagingKind[]).includes(k);
 
-function liquidModeOf(spec: ItemSpec): LiquidMode {
-  if (isBulkLiquid(spec)) return 'bulk';
+function materialModeOf(spec: ItemSpec): MaterialMode {
+  if (isBulk(spec)) return 'bulk';
   return isContainer(spec.packaging) ? spec.packaging : 'other';
 }
 
-/** Container weight of a liquid unit: preset containers use the preset tare, bulk fills none, other containers the user's tare. */
+/** Container weight of a material unit: preset containers use the preset tare, bulk fills none, other containers the user's tare. */
 function tareFor(spec: ItemSpec, otherTareKg: number): number {
-  if (isBulkLiquid(spec)) return 0;
+  if (isBulk(spec)) return 0;
   return isContainer(spec.packaging) ? PACKAGING_PRESETS[spec.packaging].tareKg : otherTareKg;
 }
 
-/** Keeps a liquid spec's gross weight = volume × density + container. */
+/** Keeps a material spec's gross weight = volume × density + container. */
 function syncWeight(spec: ItemSpec, otherTareKg: number): ItemSpec {
-  return spec.liquid ? { ...spec, weightKg: liquidWeightKg(spec.liquid) + tareFor(spec, otherTareKg) } : spec;
+  return spec.material ? { ...spec, weightKg: materialWeightKg(spec.material) + tareFor(spec, otherTareKg) } : spec;
 }
 
-/** Hazmat, food and temperature defaults a library liquid brings along. */
-function liquidPrefill(def: LiquidDef): Partial<ItemSpec> {
+/** Hazmat, food and temperature defaults a library material brings along. */
+function materialPrefill(def: MaterialDef): Partial<ItemSpec> {
   return { hazmat: def.hazmat ? { ...def.hazmat } : undefined, isFood: def.isFood, temp: def.temp };
+}
+
+/** A loose bulk fill: no box, handling or orientation (it takes the shape of its compartment or body). */
+function bulkPatch(material: MaterialContents): Partial<ItemSpec> {
+  return {
+    packaging: 'bulk',
+    rotation: 'none',
+    dims: { l: 1, w: 1, h: 1 },
+    palletHeight: 0,
+    shape: 'box',
+    stackable: false,
+    maxLoadOnTopKg: 0,
+    maxStackLayers: 1,
+    fragile: false,
+    keepUpright: true,
+    cogOffset: { x: 0, y: 0, z: 0 },
+    material: { ...material, volumeL: Math.max(material.volumeL, DEFAULT_BULK_L), containerCapacityL: undefined },
+  };
 }
 
 function blankSpec(): ItemSpec {
@@ -90,8 +108,10 @@ function initialDraft(request: ItemEditorRequest, plan: Plan, templates: ItemTem
 }
 
 const toDisplayTemp = (c: number, sys: UnitSystem) => (sys === 'metric' ? `${formatNumber(c, 0)} °C` : `${formatNumber((c * 9) / 5 + 32, 0)} °F`);
-/** Litres for display: whole litres from 100 L up; gallons always to 0.1 gal. */
-const litres = (l: number, sys: UnitSystem) => formatLitres(l, sys, sys === 'imperial' || l < 100 ? 1 : 0);
+/** Material volume for display: litres whole from 100 L up, gallons and m³ / yd³ to one decimal. */
+const vol = (litres: number, state: MaterialState, sys: UnitSystem) => formatMaterialVolume(litres, state, sys, state === 'liquid' && sys === 'metric' && litres >= 100 ? 0 : 1);
+/** Material weight for display: dry bulk in tonnes (metric) like "19.0 t", liquids in kg / lb. */
+const matWeight = (kg: number, state: MaterialState, sys: UnitSystem) => (state === 'solid' && sys === 'metric' ? formatWeight(kg, sys, { unit: 't', digits: 1 }) : formatWeight(kg, sys));
 
 function Section({ title, children, right }: { title: string; children: ReactNode; right?: ReactNode }) {
   return (
@@ -187,22 +207,34 @@ function ItemEditorForm({ request, initial }: { request: ItemEditorRequest; init
   const [lenUnit, setLenUnit] = useState<LengthUnit>(itemLengthUnit(sys));
   const [wUnit, setWUnit] = useState<WeightUnit>(weightUnit(sys));
   const [showTemplates, setShowTemplates] = useState(false);
-  const [showLiquids, setShowLiquids] = useState(false);
+  const [showMaterials, setShowMaterials] = useState(false);
   const [touched, setTouched] = useState(request.mode === 'edit');
-  /** Container weight of "Other container" liquids (preset containers use their preset tare). */
-  const [otherTareKg, setOtherTareKg] = useState(() => liquidTareKg(initial.spec));
+  /** Container weight of "Other container" materials (preset containers use their preset tare). */
+  const [otherTareKg, setOtherTareKg] = useState(() => materialTareKg(initial.spec));
 
   const { spec } = draft;
-  const liquid = spec.liquid;
-  const bulk = isBulkLiquid(spec);
+  const material = spec.material;
+  const bulk = isBulk(spec);
+  const solid = material?.state === 'solid';
   const derived = useMemo(() => deriveItem(spec, plan), [spec, plan]);
   const issues = useMemo(() => checkDraft(draft, plan, derived), [draft, plan, derived]);
   const invalid = hasErrors(issues);
   const err = (k: keyof DraftIssues['errors']) => (touched ? issues.errors[k] : undefined);
+  /** Dry bulk: the largest legal load among the plan's dump trucks (or the dump-truck presets when the plan has none). */
+  const legal = useMemo(() => {
+    if (!bulk || !material || material.state !== 'solid') return null;
+    const planTrucks = plan.vehicles.filter((v) => vehicleSuits(spec, v));
+    let best: { litres: number; limitedBy: string; vehicle: string } | null = null;
+    for (const v of planTrucks.length ? planTrucks : presetVehicleList().filter((x) => vehicleSuits(spec, x))) {
+      const fill = bestLegalFill(v, material);
+      if (fill && (!best || fill.litres > best.litres)) best = { litres: fill.litres, limitedBy: fill.limitedBy, vehicle: v.name };
+    }
+    return best;
+  }, [bulk, material, plan, spec]);
 
   const close = useCallback(() => closeDialog('itemEditor'), [closeDialog]);
   const setSpec = (patch: Partial<ItemSpec>) => setDraft((d) => ({ ...d, spec: syncWeight({ ...d.spec, ...patch }, otherTareKg) }));
-  const setLiquid = (patch: Partial<LiquidContents>) => setDraft((d) => (d.spec.liquid ? { ...d, spec: syncWeight({ ...d.spec, liquid: { ...d.spec.liquid, ...patch } }, otherTareKg) } : d));
+  const setMaterial = (patch: Partial<MaterialContents>) => setDraft((d) => (d.spec.material ? { ...d, spec: syncWeight({ ...d.spec, material: { ...d.spec.material, ...patch } }, otherTareKg) } : d));
   const set = (patch: Partial<LineDraft>) => setDraft((d) => ({ ...d, ...patch }));
 
   const palletized = spec.palletHeight > 0;
@@ -211,17 +243,17 @@ function ItemEditorForm({ request, initial }: { request: ItemEditorRequest; init
 
   const applyTemplate = (t: ItemTemplate) => {
     setDraft((d) => ({ ...d, spec: structuredClone(t.spec), contents: t.contents }));
-    setOtherTareKg(liquidTareKg(t.spec));
+    setOtherTareKg(materialTareKg(t.spec));
     setShowTemplates(false);
     toast(`Prefilled from “${t.spec.name}”`, 'info');
   };
 
   const applyPackaging = (kind: PackagingKind) => {
     const next = PACKAGING_PRESETS[kind];
-    if (liquid) {
-      // Liquids: the weight follows the container; preset containers start at their nominal fill.
-      const volumeL = next.nominalL ?? liquid.volumeL;
-      setSpec({ packaging: kind, ...(next.dims ? { dims: { ...next.dims }, palletHeight: next.palletHeight, shape: next.shape } : {}), liquid: { ...liquid, volumeL, containerCapacityL: isContainer(kind) ? undefined : liquid.containerCapacityL } });
+    if (material) {
+      // Materials: the weight follows the container; preset containers start at their nominal fill.
+      const volumeL = next.nominalL ?? material.volumeL;
+      setSpec({ packaging: kind, ...(next.dims ? { dims: { ...next.dims }, palletHeight: next.palletHeight, shape: next.shape } : {}), material: { ...material, volumeL, containerCapacityL: isContainer(kind) ? undefined : material.containerCapacityL } });
       return;
     }
     const prev = PACKAGING_PRESETS[spec.packaging];
@@ -243,19 +275,19 @@ function ItemEditorForm({ request, initial }: { request: ItemEditorRequest; init
 
   const setPalletHeight = (ph: number) => setSpec({ palletHeight: ph, dims: { ...spec.dims, h: goodsH + ph } });
 
-  // Liquids ---------------------------------------------------------------------------------------
+  // Materials ---------------------------------------------------------------------------------------
 
-  const setLiquidOn = (on: boolean) => {
+  const setMaterialOn = (on: boolean) => {
     if (!on) {
       // Back to manual weight entry; a bulk fill becomes an ordinary custom unit.
       setDraft((d) => {
-        const { liquid: _liquid, ...rest } = d.spec;
-        const wasBulk = isBulkLiquid(d.spec);
+        const { material: _material, ...rest } = d.spec;
+        const wasBulk = isBulk(d.spec);
         return { ...d, spec: { ...rest, ...(wasBulk ? { packaging: 'custom' as const, rotation: 'yaw' as const } : {}) } };
       });
       return;
     }
-    const def = liquidDef('water')!;
+    const def = materialDef('water')!;
     const kind: ContainerKind = isContainer(spec.packaging) ? spec.packaging : 'drum';
     const p = PACKAGING_PRESETS[kind];
     setSpec({
@@ -264,45 +296,41 @@ function ItemEditorForm({ request, initial }: { request: ItemEditorRequest; init
       shape: p.shape,
       palletHeight: 0,
       name: spec.name.trim() ? spec.name : def.name,
-      ...liquidPrefill(def),
-      liquid: { liquidId: def.id, name: def.name, densityKgPerL: def.densityKgPerL, volumeL: p.nominalL! },
+      ...materialPrefill(def),
+      material: { materialId: def.id, name: def.name, state: def.state, densityKgPerL: def.densityKgPerL, volumeL: p.nominalL! },
     });
-    setShowLiquids(true);
+    setShowMaterials(true);
   };
 
-  const pickLiquid = (liquidId: string) => {
-    if (!liquid) return;
-    setShowLiquids(false);
-    const keepName = spec.name.trim() !== '' && spec.name !== liquid.name;
-    if (liquidId === CUSTOM_LIQUID_ID) {
-      const name = liquid.liquidId === CUSTOM_LIQUID_ID ? liquid.name : 'Custom liquid';
-      setSpec({ name: keepName ? spec.name : name, liquid: { ...liquid, liquidId, name } });
+  /** Dry bulk only travels loose (dump truck) or in an "other" container (e.g. a big bag), not in drums, IBCs or jerrycans. */
+  const forState = (next: MaterialContents): Partial<ItemSpec> => (next.state === 'solid' && isContainer(spec.packaging) ? bulkPatch(next) : { material: next });
+
+  const pickMaterial = (materialId: string) => {
+    if (!material) return;
+    setShowMaterials(false);
+    const keepName = spec.name.trim() !== '' && spec.name !== material.name;
+    if (materialId === CUSTOM_MATERIAL_ID) {
+      const name = material.materialId === CUSTOM_MATERIAL_ID ? material.name : 'Custom material';
+      setSpec({ name: keepName ? spec.name : name, material: { ...material, materialId, name } });
       return;
     }
-    const def = liquidDef(liquidId)!;
-    setSpec({ name: keepName ? spec.name : def.name, ...liquidPrefill(def), liquid: { ...liquid, liquidId, name: def.name, densityKgPerL: def.densityKgPerL } });
+    const def = materialDef(materialId)!;
+    const next: MaterialContents = { ...material, materialId, name: def.name, state: def.state, densityKgPerL: def.densityKgPerL };
+    setSpec({ name: keepName ? spec.name : def.name, ...materialPrefill(def), ...forState(next) });
   };
 
-  const setMode = (mode: LiquidMode) => {
-    if (!liquid || mode === liquidModeOf(spec)) return;
+  const setCustomState = (state: MaterialState) => {
+    if (!material || material.state === state) return;
+    setSpec(forState({ ...material, state }));
+  };
+
+  const setMode = (mode: MaterialMode) => {
+    if (!material || mode === materialModeOf(spec)) return;
     const fromBulk = bulk;
     if (mode === 'bulk') {
-      setSpec({
-        packaging: 'bulk-liquid',
-        rotation: 'none',
-        dims: { l: 1, w: 1, h: 1 },
-        palletHeight: 0,
-        shape: 'box',
-        stackable: false,
-        maxLoadOnTopKg: 0,
-        maxStackLayers: 1,
-        fragile: false,
-        keepUpright: true,
-        cogOffset: { x: 0, y: 0, z: 0 },
-        liquid: { ...liquid, volumeL: Math.max(liquid.volumeL, DEFAULT_BULK_L), containerCapacityL: undefined },
-      });
+      setSpec(bulkPatch(material));
     } else if (mode === 'other') {
-      setSpec({ packaging: 'custom', ...(fromBulk ? { rotation: 'yaw' as const, dims: { l: 1.2, w: 1.0, h: 1.0 } } : {}) });
+      setSpec({ packaging: 'custom', ...(fromBulk ? { rotation: 'yaw' as const, dims: { l: 1.0, w: 1.0, h: 1.0 }, material: { ...material, volumeL: Math.min(material.volumeL, 1000) } } : {}) });
     } else {
       const p = PACKAGING_PRESETS[mode];
       setSpec({
@@ -311,7 +339,7 @@ function ItemEditorForm({ request, initial }: { request: ItemEditorRequest; init
         shape: p.shape,
         palletHeight: 0,
         ...(fromBulk ? { rotation: 'yaw' as const } : {}),
-        liquid: { ...liquid, volumeL: p.nominalL!, containerCapacityL: undefined },
+        material: { ...material, volumeL: p.nominalL!, containerCapacityL: undefined },
       });
     }
   };
@@ -331,7 +359,7 @@ function ItemEditorForm({ request, initial }: { request: ItemEditorRequest; init
       name: spec.name.trim(),
       notes: spec.notes?.trim() || undefined,
       hazmat: spec.hazmat ? { ...spec.hazmat, unNumber: spec.hazmat.unNumber.trim().toUpperCase() } : undefined,
-      liquid: liquid ? { ...liquid, name: liquid.name.trim() } : undefined,
+      material: material ? { ...material, name: material.name.trim() } : undefined,
     },
   });
 
@@ -347,7 +375,8 @@ function ItemEditorForm({ request, initial }: { request: ItemEditorRequest; init
       const id = addLine(line);
       const vehicleId = place ? targetVehicleId(line.spec) : undefined;
       if (place && !vehicleId) {
-        toast(`Added ${line.spec.name} as unplaced: no ${isBulkLiquid(line.spec) ? 'tanker' : 'box or flatbed vehicle'} in this plan`, 'error');
+        const needed = !isBulk(line.spec) ? 'box or flatbed vehicle' : line.spec.material?.state === 'solid' ? 'dump truck' : 'tanker';
+        toast(`Added ${line.spec.name} as unplaced: no ${needed} in this plan`, 'error');
       } else if (vehicleId) {
         const placed = placeOnVehicle(
           Array.from({ length: line.quantity }, (_, i) => unitIdOf(id, i)),
@@ -393,12 +422,14 @@ function ItemEditorForm({ request, initial }: { request: ItemEditorRequest; init
   const range = plan.settings.tempRanges[spec.temp];
   const totalKg = spec.weightKg * draft.quantity;
   const tare = PACKAGING_PRESETS[spec.packaging].tareKg;
-  const mode = liquid ? liquidModeOf(spec) : null;
-  const liquidKg = liquid ? liquidWeightKg(liquid) : 0;
-  const containerKg = liquid ? tareFor(spec, otherTareKg) : 0;
-  const libraryDef = liquid ? liquidDef(liquid.liquidId) : undefined;
-  const cap = liquid && !bulk ? containerCapacityL(spec) : undefined;
-  const fillPct = liquid ? maxFillPct(liquid.liquidId) : 0;
+  const mode = material ? materialModeOf(spec) : null;
+  const materialKg = material ? materialWeightKg(material) : 0;
+  const containerKg = material ? tareFor(spec, otherTareKg) : 0;
+  const libraryDef = material ? materialDef(material.materialId) : undefined;
+  const cap = material && !bulk ? containerCapacityL(spec) : undefined;
+  const fillPct = material ? maxFillPct(material.materialId, material.state) : 0;
+  const state: MaterialState = material?.state ?? 'liquid';
+  const unitWord = bulk ? (solid ? 'load' : 'fill') : 'unit';
 
   const footer = (
     <>
@@ -455,7 +486,7 @@ function ItemEditorForm({ request, initial }: { request: ItemEditorRequest; init
                   <Select
                     value={spec.packaging}
                     onChange={applyPackaging}
-                    options={PACKAGING_KINDS.filter((k) => k !== 'bulk-liquid').map((k) => ({ value: k, label: PACKAGING_PRESETS[k].label }))}
+                    options={PACKAGING_KINDS.filter((k) => k !== 'bulk').map((k) => ({ value: k, label: PACKAGING_PRESETS[k].label }))}
                     aria-label="Packaging preset"
                   />
                 </Field>
@@ -477,47 +508,70 @@ function ItemEditorForm({ request, initial }: { request: ItemEditorRequest; init
           </Section>
 
           <Section
-            title="Liquid"
+            title="Material"
             right={
-              <Button size="sm" variant="ghost" icon={<Droplets className="h-3.5 w-3.5" />} onClick={() => openDialog('liquids', true)}>
-                Liquid weights
+              <Button size="sm" variant="ghost" icon={<Scale className="h-3.5 w-3.5" />} onClick={() => openDialog('materials', true)}>
+                Material weights
               </Button>
             }
           >
-            <Toggle checked={!!liquid} onChange={setLiquidOn} label="Liquid cargo" hint="Weight is calculated from volume × density (+ container)" />
-            {liquid && mode && (
+            <Toggle checked={!!material} onChange={setMaterialOn} label="Liquid / bulk material" hint="Weight is calculated from volume × density (+ container)" />
+            {material && mode && (
               <>
                 <div className="flex flex-col gap-2 rounded-lg border border-line p-2.5">
                   <div className="flex flex-wrap items-center gap-2">
-                    <ColorDot color={liquidColor(liquid.liquidId)} size={12} className="ring-1 ring-black/10" />
-                    <span className="text-sm font-medium text-ink">{libraryDef ? libraryDef.name : 'Custom liquid'}</span>
-                    {libraryDef && <span className="font-mono num text-xs text-muted">{formatLiquidDensity(libraryDef.densityKgPerL, sys)}</span>}
-                    {libraryDef && <LiquidBadges def={libraryDef} />}
-                    <Button size="sm" variant="ghost" className="ml-auto" onClick={() => setShowLiquids((v) => !v)} aria-expanded={showLiquids}>
-                      {showLiquids ? 'Close list' : 'Change liquid'}
+                    <ColorDot color={materialColor(material.materialId, material.state)} size={12} className="ring-1 ring-black/10" />
+                    <span className="text-sm font-medium text-ink">{libraryDef ? libraryDef.name : 'Custom material'}</span>
+                    <Chip>{solid ? 'Dry bulk' : 'Liquid'}</Chip>
+                    {libraryDef && <span className="font-mono num text-xs text-muted">{formatMaterialDensity(libraryDef.densityKgPerL, libraryDef.state, sys)}</span>}
+                    {libraryDef && <MaterialBadges def={libraryDef} />}
+                    <Button size="sm" variant="ghost" className="ml-auto" onClick={() => setShowMaterials((v) => !v)} aria-expanded={showMaterials}>
+                      {showMaterials ? 'Close list' : 'Change material'}
                     </Button>
                   </div>
-                  {showLiquids && <LiquidPicker value={liquid.liquidId} onPick={pickLiquid} sys={sys} />}
-                  {libraryDef?.note && !showLiquids && <p className="text-[11px] text-muted">{libraryDef.note}</p>}
+                  {showMaterials && <MaterialPicker value={material.materialId} onPick={pickMaterial} sys={sys} />}
+                  {libraryDef?.note && !showMaterials && <p className="text-[11px] text-muted">{libraryDef.note}</p>}
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
                   {!libraryDef && (
-                    <Field label="Liquid name" error={err('liquidName')}>
-                      <TextInput value={liquid.name} onChange={(e) => setLiquid({ name: e.target.value })} placeholder="e.g. Glycerine" aria-label="Liquid name" />
-                    </Field>
+                    <>
+                      <Field label="Material name" error={err('materialName')}>
+                        <TextInput value={material.name} onChange={(e) => setMaterial({ name: e.target.value })} placeholder="e.g. Glycerine or Fly ash" aria-label="Material name" />
+                      </Field>
+                      <Field label="State">
+                        <SegmentedControl<MaterialState>
+                          label="Material state"
+                          size="sm"
+                          value={material.state}
+                          onChange={setCustomState}
+                          options={[
+                            { value: 'liquid', label: 'Liquid' },
+                            { value: 'solid', label: 'Dry bulk' },
+                          ]}
+                        />
+                      </Field>
+                    </>
                   )}
                   <Field
-                    label="Density"
+                    label={solid ? 'Bulk density' : 'Density'}
                     error={err('density')}
-                    hint={libraryDef && Math.abs(libraryDef.densityKgPerL - liquid.densityKgPerL) > 1e-9 ? `Library value ${formatLiquidDensity(libraryDef.densityKgPerL, sys)}` : libraryDef ? 'Typical at 15 °C; override for your product' : undefined}
+                    hint={
+                      libraryDef && Math.abs(libraryDef.densityKgPerL - material.densityKgPerL) > 1e-9
+                        ? `Library value ${formatMaterialDensity(libraryDef.densityKgPerL, libraryDef.state, sys)}`
+                        : libraryDef
+                          ? solid
+                            ? 'Typical loose density; override for your load'
+                            : 'Typical at 15 °C; override for your product'
+                          : undefined
+                    }
                   >
                     <div className="flex gap-1">
                       <div className="min-w-0 flex-1">
-                        <LiquidDensityInput kgPerL={liquid.densityKgPerL} onChange={(densityKgPerL) => setLiquid({ densityKgPerL })} sys={sys} min={0} aria-label="Liquid density" />
+                        <MaterialDensityInput kgPerL={material.densityKgPerL} onChange={(densityKgPerL) => setMaterial({ densityKgPerL })} state={material.state} sys={sys} min={0} aria-label="Material density" />
                       </div>
-                      {libraryDef && Math.abs(libraryDef.densityKgPerL - liquid.densityKgPerL) > 1e-9 && (
-                        <Button size="sm" variant="ghost" className="h-9" title="Reset to the library density" aria-label="Reset density" onClick={() => setLiquid({ densityKgPerL: libraryDef.densityKgPerL })}>
+                      {libraryDef && Math.abs(libraryDef.densityKgPerL - material.densityKgPerL) > 1e-9 && (
+                        <Button size="sm" variant="ghost" className="h-9" title="Reset to the library density" aria-label="Reset density" onClick={() => setMaterial({ densityKgPerL: libraryDef.densityKgPerL })}>
                           <RotateCcw className="h-3.5 w-3.5" />
                         </Button>
                       )}
@@ -526,48 +580,57 @@ function ItemEditorForm({ request, initial }: { request: ItemEditorRequest; init
                 </div>
 
                 <Field label="How it travels">
-                  <SegmentedControl<LiquidMode>
+                  <SegmentedControl<MaterialMode>
                     label="How it travels"
                     size="sm"
                     value={mode}
                     onChange={setMode}
-                    options={[
-                      ...CONTAINERS.map((k) => ({ value: k, label: `${CONTAINER_NAMES[k]} ${formatLitres(PACKAGING_PRESETS[k].nominalL!, sys, sys === 'metric' ? 0 : 1)}`, title: PACKAGING_PRESETS[k].note })),
-                      { value: 'other' as const, label: 'Other container', title: 'Your own container: set its weight and capacity' },
-                      { value: 'bulk' as const, label: 'Bulk (tanker)', title: 'One tanker compartment fill per unit' },
-                    ]}
+                    options={
+                      solid
+                        ? [
+                            { value: 'bulk', label: 'Bulk (dump truck)', title: 'One dump-body load per unit' },
+                            { value: 'other', label: 'Other container', title: 'e.g. a big bag: set its weight and capacity' },
+                          ]
+                        : [
+                            ...CONTAINERS.map((k) => ({ value: k, label: `${CONTAINER_NAMES[k]} ${formatMaterialVolume(PACKAGING_PRESETS[k].nominalL!, 'liquid', sys, sys === 'metric' ? 0 : 1)}`, title: PACKAGING_PRESETS[k].note })),
+                            { value: 'other' as const, label: 'Other container', title: 'Your own container: set its weight and capacity' },
+                            { value: 'bulk' as const, label: 'Bulk (tanker)', title: 'One tanker compartment fill per unit' },
+                          ]
+                    }
                   />
                 </Field>
 
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
                   <Field
-                    label={bulk ? 'Volume per fill' : 'Volume per unit'}
+                    label={`Volume per ${unitWord}`}
                     error={err('volume')}
                     hint={
                       bulk
-                        ? `Max fill ${fillPct} % of the compartment`
+                        ? solid
+                          ? 'Level with the body sides (struck)'
+                          : `Max fill ${fillPct} % of the compartment`
                         : cap
-                          ? `Capacity ${litres(cap, sys)} · max fill ${fillPct} % = ${litres((cap * fillPct) / 100, sys)}`
+                          ? `Capacity ${vol(cap, state, sys)} · max fill ${fillPct} % = ${vol((cap * fillPct) / 100, state, sys)}`
                           : 'Container capacity not set'
                     }
                   >
-                    <LitresInput litres={liquid.volumeL} onChange={(volumeL) => setLiquid({ volumeL })} sys={sys} aria-label="Liquid volume" />
+                    <MaterialVolumeInput litres={material.volumeL} onChange={(volumeL) => setMaterial({ volumeL })} state={material.state} sys={sys} aria-label="Material volume" />
                   </Field>
                   {mode === 'other' && (
                     <>
-                      <Field label="Container weight" hint="Empty container / pallet">
+                      <Field label="Container weight" hint={solid ? 'Empty big bag / container' : 'Empty container / pallet'}>
                         <WeightInput kg={otherTareKg} onChange={setOtherTare} unit={wUnit} aria-label="Container weight" />
                       </Field>
                       <Field label="Container capacity" hint="Brim capacity; 0 = not checked">
-                        <LitresInput litres={liquid.containerCapacityL ?? 0} onChange={(l) => setLiquid({ containerCapacityL: l > 0 ? l : undefined })} sys={sys} aria-label="Container capacity" />
+                        <MaterialVolumeInput litres={material.containerCapacityL ?? 0} onChange={(l) => setMaterial({ containerCapacityL: l > 0 ? l : undefined })} state={material.state} sys={sys} aria-label="Container capacity" />
                       </Field>
                     </>
                   )}
                 </div>
                 <p className="rounded-lg bg-canvas px-2.5 py-2 font-mono num text-xs text-ink-soft" aria-label="Weight calculation">
-                  {litres(liquid.volumeL, sys)} × {formatLiquidDensity(liquid.densityKgPerL, sys)} = {formatWeight(liquidKg, sys)} + container {formatWeight(containerKg, sys)} ={' '}
-                  <span className="font-semibold text-ink">{formatWeight(spec.weightKg, sys)}</span>
-                  {bulk ? ' per fill' : ' per unit'}
+                  {vol(material.volumeL, state, sys)} × {formatMaterialDensity(material.densityKgPerL, state, sys)} = {matWeight(materialKg, state, sys)}
+                  {bulk ? '' : ` + container ${formatWeight(containerKg, sys)} = `}
+                  {!bulk && <span className="font-semibold text-ink">{formatWeight(spec.weightKg, sys)}</span>} per {unitWord}
                 </p>
               </>
             )}
@@ -641,16 +704,20 @@ function ItemEditorForm({ request, initial }: { request: ItemEditorRequest; init
             )}
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
               <Field
-                label={liquid ? `Weight per ${bulk ? 'fill' : 'unit'} (calculated)` : 'Weight per unit (gross)'}
+                label={material ? `Weight per ${unitWord} (calculated)` : 'Weight per unit (gross)'}
                 error={err('weight')}
-                hint={liquid ? 'Volume × density + container' : tare ? `Incl. ≈ ${formatWeight(tare, sys)} packaging` : 'Including packaging'}
+                hint={material ? `Volume × density${bulk ? '' : ' + container'}` : tare ? `Incl. ≈ ${formatWeight(tare, sys)} packaging` : 'Including packaging'}
               >
-                <WeightInput kg={spec.weightKg} onChange={(kg) => setSpec({ weightKg: kg })} unit={wUnit} readOnly={!!liquid} disabled={!!liquid} aria-label="Weight per unit" />
+                <WeightInput kg={spec.weightKg} onChange={(kg) => setSpec({ weightKg: kg })} unit={wUnit} readOnly={!!material} disabled={!!material} aria-label="Weight per unit" />
               </Field>
-              <Field label={bulk ? 'Fills (one compartment each)' : 'Quantity'} error={err('quantity')} hint={`Total ${formatWeight(totalKg, sys)}${liquid ? ` · ${litres(liquid.volumeL * draft.quantity, sys)}` : ''}`}>
+              <Field
+                label={bulk ? (solid ? 'Loads (one dump body each)' : 'Fills (one compartment each)') : 'Quantity'}
+                error={err('quantity')}
+                hint={`Total ${formatWeight(totalKg, sys)}${material ? ` · ${vol(material.volumeL * draft.quantity, state, sys)}` : ''}`}
+              >
                 <NumberInput value={draft.quantity} onChange={(n) => set({ quantity: n })} digits={0} min={1} aria-label="Quantity" />
               </Field>
-              <Field label="Contents" hint={liquid ? 'e.g. order or batch reference' : 'e.g. 480 pcs'}>
+              <Field label="Contents" hint={material ? 'e.g. order or batch reference' : 'e.g. 480 pcs'}>
                 <TextInput value={draft.contents ?? ''} onChange={(e) => set({ contents: e.target.value })} />
               </Field>
             </div>
@@ -698,7 +765,7 @@ function ItemEditorForm({ request, initial }: { request: ItemEditorRequest; init
 
           <Section title="Temperature & food">
             <div className="grid grid-cols-2 items-end gap-3">
-              <Field label="Temperature class" hint={`${toDisplayTemp(range.min, sys)} … ${toDisplayTemp(range.max, sys)}${bulk && spec.temp !== 'ambient' ? ' · needs an insulated tank' : ''}`}>
+              <Field label="Temperature class" hint={`${toDisplayTemp(range.min, sys)} … ${toDisplayTemp(range.max, sys)}${bulk && !solid && spec.temp !== 'ambient' ? ' · needs an insulated tank' : ''}`}>
                 <SegmentedControl<TempClass>
                   label="Temperature class"
                   size="sm"
@@ -715,7 +782,7 @@ function ItemEditorForm({ request, initial }: { request: ItemEditorRequest; init
                   }))}
                 />
               </Field>
-              <Toggle checked={spec.isFood} onChange={(isFood) => setSpec({ isFood })} label="Food / feed" hint={bulk ? 'Needs a food-grade tank' : 'Kept away from toxic (6.1) and infectious (6.2) goods'} />
+              <Toggle checked={spec.isFood} onChange={(isFood) => setSpec({ isFood })} label="Food / feed" hint={bulk && !solid ? 'Needs a food-grade tank' : 'Kept away from toxic (6.1) and infectious (6.2) goods'} />
             </div>
           </Section>
 
@@ -786,12 +853,16 @@ function ItemEditorForm({ request, initial }: { request: ItemEditorRequest; init
         <aside className="flex flex-col gap-3 md:sticky md:top-0 md:self-start">
           <ItemPreview spec={spec} className="h-60 overflow-hidden rounded-lg border border-line bg-canvas" />
           <div className="grid grid-cols-2 gap-1.5">
-            {bulk && liquid ? (
+            {bulk && material ? (
               <>
-                <Stat label="Volume per fill" value={litres(liquid.volumeL, sys)} sub={draft.quantity > 1 ? `× ${draft.quantity} = ${litres(liquid.volumeL * draft.quantity, sys)}` : undefined} />
-                <Stat label="Density" value={formatLiquidDensity(liquid.densityKgPerL, sys)} />
-                <Stat label="Weight per fill" value={formatWeight(spec.weightKg, sys)} sub={draft.quantity > 1 ? `total ${formatWeight(totalKg, sys)}` : undefined} />
-                <Stat label="Max fill" value={`${fillPct} %`} sub="of compartment capacity" />
+                <Stat label={`Volume per ${unitWord}`} value={vol(material.volumeL, state, sys)} sub={draft.quantity > 1 ? `× ${draft.quantity} = ${vol(material.volumeL * draft.quantity, state, sys)}` : undefined} />
+                <Stat label={solid ? 'Bulk density' : 'Density'} value={formatMaterialDensity(material.densityKgPerL, state, sys)} />
+                <Stat label={`Weight per ${unitWord}`} value={matWeight(spec.weightKg, state, sys)} sub={draft.quantity > 1 ? `total ${matWeight(totalKg, state, sys)}` : undefined} />
+                {solid ? (
+                  <Stat label="Legal max per load" value={legal ? vol(legal.litres, state, sys) : '-'} sub={legal ? `${legal.vehicle} (${legal.limitedBy.toLowerCase()})` : 'no dump truck'} />
+                ) : (
+                  <Stat label="Max fill" value={`${fillPct} %`} sub="of compartment capacity" />
+                )}
               </>
             ) : (
               <>
@@ -805,7 +876,12 @@ function ItemEditorForm({ request, initial }: { request: ItemEditorRequest; init
             )}
           </div>
           <div className="flex flex-col gap-2.5 rounded-lg border border-line p-2.5">
-            {bulk ? (
+            {bulk && solid ? (
+              <>
+                <FitList title="Fits in · plan dump trucks" fits={derived.planFits} empty="No dump truck in this plan." />
+                <FitList title="Dump-truck presets" fits={derived.presetFits} empty="No dump-truck presets." />
+              </>
+            ) : bulk ? (
               <>
                 <FitList title="Fits in · plan tankers" fits={derived.planFits} empty="No tanker in this plan." />
                 <FitList title="Tanker presets" fits={derived.presetFits} empty="No tanker presets." />

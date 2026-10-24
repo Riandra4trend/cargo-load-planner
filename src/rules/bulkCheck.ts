@@ -1,24 +1,26 @@
-/** Tanker and liquid violations of checkPlan: 'tank' (hard), 'surge' (soft) and compartment fix suggestions. */
+/** Bulk material violations of checkPlan: 'bulk' (hard), 'surge' (soft) and compartment fix suggestions. */
 import { PACKAGING_PRESETS } from '../data/packaging';
-import { bulkCog, compartmentFill, compartmentOf, isBulkLiquid } from '../domain/geometry';
-import { formatLitres, formatPercent } from '../domain/units';
-import type { Id, Plan, StageResult, TankCompartment, Vehicle, Violation } from '../domain/types';
+import { bulkCog, compartmentFill, compartmentOf, isBulk } from '../domain/geometry';
+import { formatPercent } from '../domain/units';
+import type { Id, Plan, StageResult, Compartment, Vehicle, Violation } from '../domain/types';
 import { computeStages, type StagePoint } from '../physics';
 import { planIndex } from './context';
 import {
   fillIssueMessage,
   fillIssues,
   fillsOf,
+  formatFillVolume,
   litresOf,
   maxFillL,
   pairIssue,
   pairIssueMessage,
+  stateOf,
   stageExcessKg,
   surges,
   SURGE_MAX,
   withCompartment,
   type FillRef,
-} from './tank';
+} from './bulk';
 import { validateMove } from './validateMove';
 
 type Fix = NonNullable<Violation['fix']>;
@@ -26,58 +28,58 @@ type Fix = NonNullable<Violation['fix']>;
 const pairKey = (a: Id, b: Id): string => (a < b ? `${a}:${b}` : `${b}:${a}`);
 
 /**
- * Hard 'tank' violations of one vehicle: bulk fills outside tanker compartments, packaged units in
- * a tanker, compartment checks, checks between fills and (with `containers`) overfilled packaged
+ * Hard 'bulk' violations of one vehicle: bulk fills outside compartments, packaged units in a
+ * tanker or dump truck, compartment checks, checks between fills and (with `containers`) overfilled packaged
  * liquid containers.
  */
-export function tankHardViolations(plan: Plan, v: Vehicle, containers: boolean, out: Violation[]): void {
+export function bulkHardViolations(plan: Plan, v: Vehicle, containers: boolean, out: Violation[]): void {
   const { units, labels } = planIndex(plan);
   const s = plan.settings;
   const sys = s.units;
   const hard = (id: string, message: string, unitIds: Id[], fix?: Fix) =>
-    out.push({ id, kind: 'tank', severity: 'error', hard: true, message, vehicleId: v.id, unitIds, ...(fix ? { fix } : {}) });
+    out.push({ id, kind: 'bulk', severity: 'error', hard: true, message, vehicleId: v.id, unitIds, ...(fix ? { fix } : {}) });
 
   for (const p of Object.values(plan.placements)) {
     if (p.vehicleId !== v.id) continue;
     const u = units.get(p.unitId);
     if (!u) continue;
     const label = labels.get(u.id) ?? u.spec.name;
-    if (isBulkLiquid(u.spec)) {
-      if (!v.tank || !compartmentOf(v, p.compartmentId)) hard(`tank:bulk:${u.id}`, `${label}: bulk liquid goes into a tanker compartment`, [u.id]);
-    } else if (v.tank) {
-      hard(`tank:packaged:${u.id}`, `${label}: a tanker only carries bulk liquid`, [u.id]);
-    } else if (containers && u.spec.liquid) {
-      const capacityL = u.spec.liquid.containerCapacityL ?? PACKAGING_PRESETS[u.spec.packaging]?.capacityL;
+    if (isBulk(u.spec)) {
+      if (!v.bulk || !compartmentOf(v, p.compartmentId)) hard(`bulk:misplaced:${u.id}`, `${label}: ${stateOf(u.spec) === 'solid' ? 'dry bulk goes into a dump truck body' : 'bulk liquid goes into a tanker compartment'}`, [u.id]);
+    } else if (v.bulk) {
+      hard(`bulk:packaged:${u.id}`, `${label}: ${v.bulk.kind === 'tipper' ? 'a dump truck only carries bulk material' : 'a tanker only carries bulk liquid'}`, [u.id]);
+    } else if (containers && u.spec.material) {
+      const capacityL = u.spec.material.containerCapacityL ?? PACKAGING_PRESETS[u.spec.packaging]?.capacityL;
       const maxL = capacityL === undefined ? Infinity : maxFillL(u.spec, capacityL);
       if (capacityL !== undefined && litresOf(u.spec) > maxL + 1e-6) {
         hard(
-          `tank:container:${u.id}`,
-          `${label}: ${formatLitres(litresOf(u.spec), sys)} overfills its container: max ${formatLitres(maxL, sys)} (${formatPercent(maxL / capacityL)} of ${formatLitres(capacityL, sys, 0)})`,
+          `bulk:container:${u.id}`,
+          `${label}: ${formatFillVolume(u.spec, litresOf(u.spec), sys, 1)} overfills its container: max ${formatFillVolume(u.spec, maxL, sys, 1)} (${formatPercent(maxL / capacityL)} of ${formatFillVolume(u.spec, capacityL, sys, 0)})`,
           [u.id],
         );
       }
     }
   }
-  if (!v.tank) return;
+  if (!v.bulk) return;
 
   const fills = fillsOf(v, plan.placements, units, labels);
   for (const f of fills) {
     for (const issue of fillIssues(v, f.c, f.spec)) {
       const fix = issue.type === 'overfill' ? overfillFix(plan, v, f) : undefined;
-      hard(`tank:${issue.type}:${f.id}`, fillIssueMessage(issue, f, v, sys), [f.id], fix);
+      hard(`bulk:${issue.type}:${f.id}`, fillIssueMessage(issue, f, v, sys), [f.id], fix);
     }
   }
   for (let i = 0; i < fills.length; i++) {
     for (let j = i + 1; j < fills.length; j++) {
       const issue = pairIssue(v, s, fills[i], fills[j]);
-      if (issue) hard(`tank:${issue.type}:${pairKey(fills[i].id, fills[j].id)}`, pairIssueMessage(issue, fills[i], fills[j]), [fills[i].id, fills[j].id]);
+      if (issue) hard(`bulk:${issue.type}:${pairKey(fills[i].id, fills[j].id)}`, pairIssueMessage(issue, fills[i], fills[j]), [fills[i].id, fills[j].id]);
     }
   }
 }
 
 /** Soft 'surge' warnings for partially filled unbaffled compartments. */
 export function surgeViolations(plan: Plan, v: Vehicle, out: Violation[]): void {
-  if (!v.tank || v.tank.baffled) return;
+  if (!v.bulk || v.bulk.baffled) return;
   const { units, labels } = planIndex(plan);
   for (const f of fillsOf(v, plan.placements, units, labels)) {
     if (!surges(v, f.c, f.spec)) continue;
@@ -96,10 +98,10 @@ export function surgeViolations(plan: Plan, v: Vehicle, out: Violation[]): void 
   }
 }
 
-const freeCompartments = (plan: Plan, v: Vehicle): TankCompartment[] =>
-  (v.tank?.compartments ?? []).filter((c) => !Object.values(plan.placements).some((p) => p.vehicleId === v.id && p.compartmentId === c.id));
+const freeCompartments = (plan: Plan, v: Vehicle): Compartment[] =>
+  (v.bulk?.compartments ?? []).filter((c) => !Object.values(plan.placements).some((p) => p.vehicleId === v.id && p.compartmentId === c.id));
 
-function moveTo(plan: Plan, v: Vehicle, f: FillRef, c: TankCompartment): Fix | undefined {
+function moveTo(plan: Plan, v: Vehicle, f: FillRef, c: Compartment): Fix | undefined {
   const action = { type: 'compartment' as const, unitId: f.id, vehicleId: v.id, compartmentId: c.id };
   if (!validateMove(plan, { unitId: f.id, vehicleId: v.id, compartmentId: c.id, pos: { x: c.fromX, y: 0, z: 0 }, orient: 0 }).ok) return undefined;
   return { label: `Move ${f.label} to ${c.label}`, action };
@@ -130,13 +132,13 @@ function surgeFix(plan: Plan, v: Vehicle, f: FillRef): Fix | undefined {
 }
 
 /**
- * Tanker axle fixes: the single compartment move or swap of one of the responsible fills that
+ * Tanker and dump truck axle fixes: the single compartment move or swap of one of the responsible fills that
  * clears every axle problem at every stage (or, failing that, leaves the least excess while
  * clearing the violation it is attached to).
  */
-export function tankAxleFixes(plan: Plan, v: Vehicle, points: readonly StagePoint[], vios: readonly Violation[]): void {
-  const tank = v.tank;
-  if (!tank) return;
+export function bulkAxleFixes(plan: Plan, v: Vehicle, points: readonly StagePoint[], vios: readonly Violation[]): void {
+  const bulk = v.bulk;
+  if (!bulk) return;
   const { units, labels } = planIndex(plan);
   const fills = fillsOf(v, plan.placements, units, labels);
   const responsible = new Set(vios.flatMap((x) => x.unitIds));
@@ -144,7 +146,7 @@ export function tankAxleFixes(plan: Plan, v: Vehicle, points: readonly StagePoin
   let best: { fix: Fix; excess: number; stages: StageResult[] } | null = null;
   for (const f of fills) {
     if (!responsible.has(f.id)) continue;
-    for (const c of tank.compartments) {
+    for (const c of bulk.compartments) {
       if (c.id === f.c.id) continue;
       if (!validateMove(plan, { unitId: f.id, vehicleId: v.id, compartmentId: c.id, pos: { x: c.fromX, y: 0, z: 0 }, orient: 0 }).ok) continue;
       const after = withCompartment(plan.placements, f.id, v, c);

@@ -31,6 +31,25 @@ export interface VehicleLayout {
 /** Gap between the back of the tractor cab and the trailer front wall, metres. */
 const CAB_GAP = 0.95;
 
+export type CabOverClass = 'pickup' | 'light' | 'medium' | 'heavy';
+
+/** Cab-over cab size per truck class: length along the vehicle and roof height above the ground, metres. */
+const CAB_OVER: Record<CabOverClass, { length: number; height: number }> = {
+  pickup: { length: 1.3, height: 1.9 },
+  light: { length: 1.55, height: 2.4 },
+  medium: { length: 1.85, height: 2.8 },
+  heavy: { length: 2.05, height: 3.05 },
+};
+
+/** Rigid Indonesian trucks are cab-overs sized by class (pick-up, CDE / CDD, Fuso, tronton); others use the generic cab. */
+export function cabOverClass(v: Vehicle): CabOverClass | null {
+  if (v.statics.type !== 'rigid' || v.region !== 'ID') return null;
+  if (v.body === 'dropside' && v.grossLimitKg <= 3500) return 'pickup';
+  if (v.grossLimitKg <= 9000) return 'light';
+  if (v.grossLimitKg <= 17_000) return 'medium';
+  return 'heavy';
+}
+
 export function vehicleLayout(v: Vehicle): VehicleLayout {
   const s = v.statics;
   const ground = -v.deckHeight;
@@ -66,14 +85,22 @@ export function vehicleLayout(v: Vehicle): VehicleLayout {
   } else {
     groupX = [s.front.x, s.rear.x];
     const van = v.kind === 'van';
-    const cabLength = van ? 0.95 : 1.35;
-    cab = {
-      fromX: s.front.x - cabLength,
-      toX: van ? 0 : -0.12,
-      bottomZ: ground + wheelRadius * 0.9,
-      topZ: van ? v.cargo.h * 0.78 : Math.max(v.cargo.h - 0.2, ground + 2.9),
-    };
-    if (van) hood = { fromX: s.front.x - cabLength - 0.25, toX: s.front.x + 0.15, topZ: ground + wheelRadius * 2.4 };
+    const cabOver = cabOverClass(v);
+    if (cabOver) {
+      // Cab-over (Asian light / medium / heavy trucks, pick-ups): the front axle sits under the cab.
+      const size = CAB_OVER[cabOver];
+      const toX = -0.1;
+      cab = { fromX: Math.min(toX - size.length, s.front.x - size.length * 0.45), toX, bottomZ: ground + wheelRadius * 0.85, topZ: ground + size.height };
+    } else {
+      const cabLength = van ? 0.95 : 1.35;
+      cab = {
+        fromX: s.front.x - cabLength,
+        toX: van ? 0 : -0.12,
+        bottomZ: ground + wheelRadius * 0.9,
+        topZ: van ? v.cargo.h * 0.78 : Math.max(v.cargo.h - 0.2, ground + 2.9),
+      };
+      if (van) hood = { fromX: s.front.x - cabLength - 0.25, toX: s.front.x + 0.15, topZ: ground + wheelRadius * 2.4 };
+    }
     frame = { fromX: cab.fromX + 0.2, toX: v.cargo.l - 0.2, bottomZ: ground + wheelRadius * 1.1, topZ: -0.08 };
   }
 

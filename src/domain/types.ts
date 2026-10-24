@@ -41,8 +41,8 @@ export type PackagingKind =
   | 'ibc'
   | 'jerrycan'
   | 'long-goods'
-  /** A tanker compartment fill: no packaging, carried in a tank compartment instead of on the floor. */
-  | 'bulk-liquid'
+  /** Loose bulk material: one fill of a tank compartment or tipper body instead of a unit on the floor. */
+  | 'bulk'
   | 'custom';
 
 export interface Hazmat {
@@ -54,21 +54,25 @@ export interface Hazmat {
   netQtyKg?: number;
 }
 
+export type MaterialState = 'liquid' | 'solid';
+
 /**
- * Liquid contents of a unit. Packaged liquids (drum, IBC, jerrycan) weigh volume × density plus the
- * container; bulk liquids ('bulk-liquid' packaging) are one tanker compartment fill weighing volume × density.
- * ItemSpec.weightKg stays the authoritative gross weight and is derived from these values by the editor.
+ * Material measured by volume. Liquids travel packaged (drum, IBC, jerrycan: volume × density plus the
+ * container) or loose in a tanker compartment; dry bulk (sand, gravel, coal, grain...) rides loose in a
+ * tipper body. A loose fill ('bulk' packaging) weighs volume × density. ItemSpec.weightKg stays the
+ * authoritative gross weight and is derived from these values by the editor.
  */
-export interface LiquidContents {
-  /** Library id from domain/liquids.ts, or 'custom'. */
-  liquidId: string;
-  /** Display name, e.g. "Diesel (solar)". */
+export interface MaterialContents {
+  /** Library id from domain/materials.ts, or 'custom'. */
+  materialId: string;
+  /** Display name, e.g. "Diesel (solar)" or "Sand (dry)". */
   name: string;
-  /** Density at 15 °C, kg per litre. */
+  state: MaterialState;
+  /** Density (loose bulk density for solids), kg per litre = t/m³. */
   densityKgPerL: number;
-  /** Liquid per unit, litres. */
+  /** Volume per unit, litres (1 m³ = 1,000 L). */
   volumeL: number;
-  /** Packaged liquids in a non-preset container ("Other container"): its brim capacity, litres. Preset containers use PACKAGING_PRESETS[packaging].capacityL. */
+  /** Packaged material in a non-preset container ("Other container"): its brim capacity, litres. Preset containers use PACKAGING_PRESETS[packaging].capacityL. */
   containerCapacityL?: number;
 }
 
@@ -106,8 +110,8 @@ export interface ItemSpec {
   /** Foodstuff / animal feed: kept away from toxic and infectious hazmat (classes 6.1 and 6.2). */
   isFood: boolean;
   hazmat?: Hazmat;
-  /** Present when the unit is (or contains) a liquid. */
-  liquid?: LiquidContents;
+  /** Present when the unit is (or contains) a material measured by volume: a liquid or dry bulk. */
+  material?: MaterialContents;
 }
 
 export interface ItemTemplate {
@@ -174,13 +178,19 @@ export interface Placement {
   orient: Orientation;
   /** Pinned units are never moved by the optimiser. */
   pinned?: boolean;
-  /** Bulk liquids only: the tanker compartment holding this fill (pos/orient are then unused). */
+  /** Bulk fills only: the compartment holding this fill, a tank compartment or tipper body (pos/orient are then unused). */
   compartmentId?: Id;
 }
 
-export type VehicleKind = 'van' | 'rigid' | 'semi' | 'container' | 'flatbed' | 'tanker';
+export type VehicleKind = 'van' | 'rigid' | 'semi' | 'container' | 'flatbed' | 'tanker' | 'tipper';
 export type AccessSide = 'rear' | 'side' | 'top';
-export type Region = 'EU' | 'US' | 'custom';
+/**
+ * Body of van, rigid and semi vehicles: closed box (default), curtainsider, wingbox (both sides lift open)
+ * or dropside (open bed with low drop sides, e.g. a pick-up).
+ */
+export type BodyStyle = 'box' | 'curtain' | 'wingbox' | 'dropside';
+/** Preset origin: Europe, North America, Indonesia, international (ISO containers) or user-defined. */
+export type Region = 'EU' | 'US' | 'ID' | 'INTL' | 'custom';
 
 export interface AxleGroup {
   id: Id;
@@ -234,26 +244,33 @@ export interface TempZone {
   toX: number;
 }
 
-export interface TankCompartment {
+export interface Compartment {
   id: Id;
-  /** "C1", "C2", ... (front to rear). */
+  /** "C1", "C2", ... front to rear ("Body" for a tipper). */
   label: string;
-  /** Extent along the tank, metres from the cargo front wall. */
+  /** Extent along the cargo space, metres from the front wall. */
   fromX: number;
   toX: number;
-  /** Brim capacity, litres. */
+  /** Litres: brim capacity of a tank compartment, struck (level-full) capacity of a tipper body. */
   capacityL: number;
 }
 
-/** Tank of a tanker vehicle: compartments along the barrel (cargo dims = barrel length × width × height). */
-export interface TankSpec {
-  compartments: TankCompartment[];
-  /** Surge baffles inside the compartments make partial fills safe. */
+export type BulkKind = 'tank' | 'tipper';
+
+/**
+ * Loose-bulk cargo space: a tanker's tank (liquids, compartments along the barrel) or a tipper's dump body
+ * (dry bulk, one open compartment). The vehicle's cargo dims are the barrel or body inside dimensions.
+ */
+export interface BulkSpec {
+  kind: BulkKind;
+  compartments: Compartment[];
+  /** Tanks: surge baffles inside the compartments make partial fills safe. */
   baffled: boolean;
-  /** Food-grade (stainless) tank: may carry foodstuffs such as milk, edible oil or drinking water. */
+  /** Tanks: food-grade (stainless) tank that may carry foodstuffs such as milk, edible oil or drinking water. */
   foodGrade: boolean;
+  /** Tanks: insulated, for chilled liquids. */
   insulated: boolean;
-  /** Pressure vessel for liquefied gases such as LPG; it carries only liquids that need one. */
+  /** Tanks: pressure vessel for liquefied gases such as LPG; it carries only materials that need one. */
   pressurised: boolean;
 }
 
@@ -264,6 +281,8 @@ export interface Vehicle {
   name: string;
   region: Region;
   kind: VehicleKind;
+  /** Van, rigid and semi only; absent means a closed box. */
+  body?: BodyStyle;
   /** Internal cargo space (flatbed: deck length x width x height cap). */
   cargo: Dims;
   /** Door aperture (width x height) used to check that units fit through it. */
@@ -294,8 +313,8 @@ export interface Vehicle {
   lateralMaxImbalance: number;
   fuel: FuelProfile;
   statics: RigidStatics | ArticStatics;
-  /** Tanker vehicles only. */
-  tank?: TankSpec;
+  /** Tankers and tippers only. */
+  bulk?: BulkSpec;
 }
 
 /**
@@ -400,7 +419,7 @@ export type ViolationKind =
   | 'rotation'
   | 'temperature'
   | 'hazmat'
-  | 'tank'
+  | 'bulk'
   // soft constraints
   | 'axle-max'
   | 'axle-min'

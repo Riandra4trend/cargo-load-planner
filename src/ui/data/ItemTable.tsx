@@ -1,7 +1,6 @@
 import {
   ArrowDown,
   ArrowUp,
-  ArrowUpDown,
   Copy,
   Download,
   GripVertical,
@@ -12,6 +11,7 @@ import {
   Pin,
   PinOff,
   Plus,
+  Scissors,
   Search,
   Trash2,
   Upload,
@@ -20,10 +20,11 @@ import {
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { TEMP_COLORS, TEMP_LABELS, hazmatColor } from '../../domain/colors';
-import { isBulkLiquid, lineIdOfUnit, volumeOf } from '../../domain/geometry';
+import { isBulk, lineIdOfUnit, volumeOf } from '../../domain/geometry';
 import { HAZMAT_CLASS_NAMES } from '../../domain/settings';
 import type { CargoLine, CargoUnit, Customer, Id, Placement, Plan, Stop, UnitStatus, Vehicle } from '../../domain/types';
-import { formatDims, formatLitres, formatWeight, fromKg, parseNumber, toKg, weightUnit } from '../../domain/units';
+import { formatDims, formatMaterialVolume, formatWeight, fromKg, parseNumber, toKg, weightUnit } from '../../domain/units';
+import { materialWeightKg } from '../../domain/materials';
 import { downloadItemsCsv } from '../../io/csv';
 import { loadingSequence } from '../../sim/sequence';
 import { useDisplayPlan, useEvaluation } from '../../state/hooks';
@@ -32,6 +33,7 @@ import { Button, IconButton } from '../common/Button';
 import { Card, CardHeader } from '../common/Card';
 import { ColorDot, UnitStatusChip } from '../common/Chip';
 import { inputClass } from '../common/fields';
+import { splitAdvice, vehicleSuits, type SplitAdvice } from './itemChecks';
 import { placeOnVehicle, targetVehicleId } from './placement';
 
 type SortKey = 'item' | 'sku' | 'origin' | 'category' | 'qty' | 'dims' | 'weight' | 'bay' | 'customer' | 'stop' | 'temp' | 'hazmat' | 'status';
@@ -84,7 +86,7 @@ function sortValue(r: Row, key: SortKey): string | number {
     case 'qty':
       return r.line.quantity;
     case 'dims':
-      return isBulkLiquid(s) ? (s.liquid?.volumeL ?? 0) / 1000 : volumeOf(s.dims);
+      return isBulk(s) ? (s.material?.volumeL ?? 0) / 1000 : volumeOf(s.dims);
     case 'weight':
       return s.weightKg;
     case 'bay':
@@ -220,35 +222,42 @@ function StopCell({ row, stops, customers, disabled, onChange }: { row: Row; sto
   );
 }
 
-/** Tanker compartment of a bulk fill on the active tanker: choosing a filled compartment swaps the fills, "—" unloads. */
+/** Bulk compartment of a fill on the active tanker or dump truck: choosing a filled compartment swaps the fills, "—" unloads. */
 function CompartmentCell({ plan, vehicle, unitId, current, disabled }: { plan: Plan; vehicle: Vehicle; unitId: Id; current?: Id; disabled: boolean }) {
   const sys = plan.settings.units;
+  const bulk = vehicle.bulk!;
   const occupantName = (compartmentId: Id): string | undefined => {
     const p = Object.values(plan.placements).find((x) => x.vehicleId === vehicle.id && x.compartmentId === compartmentId && x.unitId !== unitId);
     return p ? plan.lines.find((l) => l.id === lineIdOfUnit(p.unitId))?.spec.name : undefined;
   };
   const { assignCompartment, unplaceUnits } = useStore.getState();
   return (
-    <select
-      value={current ?? ''}
-      disabled={disabled}
-      aria-label="Tanker compartment"
-      onClick={stopPropagation}
-      onKeyDown={stopPropagation}
-      onChange={(e) => (e.target.value ? assignCompartment(unitId, vehicle.id, e.target.value) : unplaceUnits([unitId]))}
-      className={`${inputClass} h-7 w-24 px-1.5 font-mono text-xs`}
-    >
+    // inputClass carries w-full, so the fixed width lives on a wrapper the table cannot squeeze.
+    <div className="w-[5.75rem] shrink-0">
+      <select
+        value={current ?? ''}
+        disabled={disabled}
+        aria-label={bulk.kind === 'tank' ? 'Tanker compartment' : 'Dump body'}
+        onClick={stopPropagation}
+        onKeyDown={stopPropagation}
+        onChange={(e) => (e.target.value ? assignCompartment(unitId, vehicle.id, e.target.value) : unplaceUnits([unitId]))}
+        title={current ? bulk.compartments.find((c) => c.id === current)?.label : 'Not loaded'}
+        className={`${inputClass} h-7 px-1 pr-5 text-[11px] num`}
+      >
       <option value="">—</option>
-      {vehicle.tank!.compartments.map((c) => {
+      {bulk.compartments.map((c) => {
+        // The closed select shows the short label ("C1 · 8,000 L" or "Body"); the open list adds what choosing it does.
+        const short = bulk.kind === 'tank' ? `${c.label} · ${formatMaterialVolume(c.capacityL, 'liquid', sys, 0)}` : c.label;
         const occupant = c.id === current ? undefined : occupantName(c.id);
         return (
           <option key={c.id} value={c.id}>
-            {c.label} · {formatLitres(c.capacityL, sys, 0)}
+            {short}
             {c.id === current ? '' : occupant ? (current ? ` · swap with ${occupant}` : ` · unloads ${occupant}`) : ' · empty'}
           </option>
         );
       })}
-    </select>
+      </select>
+    </div>
   );
 }
 
@@ -303,7 +312,7 @@ export function ItemTable() {
 
   const secondId = plan.vehicles[1]?.id;
   const activeId = plan.vehicles.some((v) => v.id === activeVehicleId) ? activeVehicleId : plan.vehicles[0]?.id;
-  const activeTanker = plan.vehicles.find((v) => v.id === activeId && v.tank);
+  const activeBulk = plan.vehicles.find((v) => v.id === activeId && v.bulk);
   const tab: TableTab = tableTab === 'vehicle2' && !secondId ? 'all' : tableTab;
   const tabs: { key: TableTab; label: string }[] = [
     { key: 'all', label: 'All' },
@@ -320,7 +329,7 @@ export function ItemTable() {
       if (!inTab(r, tab, activeId, secondId)) return false;
       if (!q) return true;
       const s = r.unit.spec;
-      return [s.name, s.sku, s.liquid?.name ?? '', r.customer?.name ?? '', r.stop?.name ?? '', `stop ${r.unit.stopSeq}`].some((t) => t.toLowerCase().includes(q));
+      return [s.name, s.sku, s.material?.name ?? '', r.customer?.name ?? '', r.stop?.name ?? '', `stop ${r.unit.stopSeq}`].some((t) => t.toLowerCase().includes(q));
     });
     if (!sort) return list;
     return list
@@ -335,6 +344,15 @@ export function ItemTable() {
   }, [rows, tab, q, sort, activeId, secondId]);
 
   const highlighted = useMemo(() => new Set(highlightLines), [highlightLines]);
+  /** "Split into legal loads" advice per bulk line whose fill exceeds the legal maximum. */
+  const splits = useMemo(() => {
+    const map = new Map<Id, SplitAdvice>();
+    for (const line of plan.lines) {
+      const advice = splitAdvice(plan, line);
+      if (advice) map.set(line.id, advice);
+    }
+    return map;
+  }, [plan]);
   const selected = useMemo(() => new Set(selection), [selection]);
 
   // Fade highlighted (e.g. urgent) rows after a few seconds and bring the first one into view.
@@ -358,15 +376,27 @@ export function ItemTable() {
 
   const place = (r: Row) => {
     const { toast, plan: committed } = store();
-    const vehicleId = targetVehicleId(r.unit.spec);
-    const bulk = isBulkLiquid(r.unit.spec);
+    const s = r.unit.spec;
+    const vehicleId = targetVehicleId(s);
+    const needed = !isBulk(s) ? 'box or flatbed vehicle' : s.material?.state === 'solid' ? 'dump truck' : 'tanker';
     if (!vehicleId) {
-      toast(bulk ? `${r.unit.spec.name} needs a tanker: add one to this plan` : `No box or flatbed vehicle for ${r.unit.spec.name} in this plan`, 'error');
+      toast(`${s.name} needs a ${needed}: add one to this plan`, 'error');
       return;
     }
     const name = committed.vehicles.find((v) => v.id === vehicleId)?.name ?? 'the vehicle';
-    if (placeOnVehicle([r.unit.id], vehicleId)) toast(`Placed ${r.unit.spec.name} on ${name}`, 'success');
-    else toast(bulk ? `No free compartment on ${name} can take ${r.unit.spec.name}` : `No legal space for ${r.unit.spec.name} on ${name}`, 'error');
+    if (placeOnVehicle([r.unit.id], vehicleId)) toast(`Placed ${s.name} on ${name}`, 'success');
+    else toast(isBulk(s) ? `No free ${needed === 'tanker' ? 'compartment' : 'dump body'} on ${name} can take ${s.name}` : `No legal space for ${s.name} on ${name}`, 'error');
+  };
+
+  /** Turns each over-limit fill into `count` equal legal fills (quantity × count, volume ÷ count, weight recomputed). */
+  const split = (line: CargoLine, advice: SplitAdvice) => {
+    const m = line.spec.material!;
+    const material = { ...m, volumeL: advice.volumeL };
+    const quantity = line.quantity * advice.count;
+    store().updateLine(line.id, { quantity, spec: { material, weightKg: materialWeightKg(material) } });
+    store().setHighlightLines([line.id]);
+    const each = formatMaterialVolume(advice.volumeL, m.state, sys, 1);
+    store().toast(`Split ${line.spec.name} into ${quantity} loads of ${each} (legal max ${formatMaterialVolume(advice.legalL, m.state, sys, 1)} on ${advice.vehicleName}). Place the new loads or add a vehicle.`, 'success');
   };
 
   const duplicate = (r: Row) => {
@@ -471,15 +501,25 @@ export function ItemTable() {
                 {COLUMNS.map((c) => {
                   const dir = sort?.key === c.key ? sort.dir : 0;
                   return (
-                    <th key={c.key} scope="col" aria-sort={dir === 1 ? 'ascending' : dir === -1 ? 'descending' : 'none'} className={`border-b border-line px-2 py-1.5 text-left font-medium text-muted first:pl-4 ${c.className ?? ''}`}>
-                      <button type="button" onClick={() => toggleSort(c.key)} className={`inline-flex items-center gap-1 whitespace-nowrap rounded hover:text-ink focus-visible:outline-2 focus-visible:outline-accent ${dir ? 'text-ink' : ''}`}>
+                    <th
+                      key={c.key}
+                      scope="col"
+                      aria-sort={dir === 1 ? 'ascending' : dir === -1 ? 'descending' : 'none'}
+                      className={`border-b border-line bg-card px-1.5 py-1.5 text-left font-medium text-muted first:sticky first:left-0 first:z-20 first:pl-3.5 ${c.className ?? ''}`}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => toggleSort(c.key)}
+                        title={dir === 1 ? `Sorted by ${c.label.toLowerCase()} (ascending)` : dir === -1 ? `Sorted by ${c.label.toLowerCase()} (descending)` : `Sort by ${c.label.toLowerCase()}`}
+                        className={`inline-flex items-center gap-0.5 whitespace-nowrap rounded hover:text-ink hover:underline decoration-dotted underline-offset-2 focus-visible:outline-2 focus-visible:outline-accent ${dir ? 'text-ink' : ''}`}
+                      >
                         {c.label}
-                        {dir === 1 ? <ArrowUp className="h-3 w-3" /> : dir === -1 ? <ArrowDown className="h-3 w-3" /> : <ArrowUpDown className="h-3 w-3 opacity-30" />}
+                        {dir === 1 ? <ArrowUp className="h-3 w-3" /> : dir === -1 ? <ArrowDown className="h-3 w-3" /> : null}
                       </button>
                     </th>
                   );
                 })}
-                <th scope="col" className="border-b border-line px-2 py-1.5 pr-4 text-right font-medium text-muted">
+                <th scope="col" className="border-b border-line px-1.5 py-1.5 pr-3 text-right font-medium text-muted">
                   Actions
                 </th>
               </tr>
@@ -492,7 +532,8 @@ export function ItemTable() {
                 const isHi = highlighted.has(line.id);
                 const isHover = hoverUnitId === unit.id;
                 const bg = isSel ? 'bg-info-soft' : isHi ? 'bg-accent-soft' : isHover ? 'bg-canvas' : '';
-                const cell = 'border-b border-line px-2 py-1.5 whitespace-nowrap';
+                const cell = 'border-b border-line px-1.5 py-1.5 whitespace-nowrap';
+                const truncate = 'block truncate';
                 return (
                   <tr
                     key={unit.id}
@@ -510,11 +551,11 @@ export function ItemTable() {
                     onClick={(e) => onRowClick(e, r)}
                     className={`cursor-pointer transition-colors duration-700 ${bg} ${!placement && !locked ? 'active:cursor-grabbing' : ''}`}
                   >
-                    <td className={`${cell} pl-4`}>
-                      <div className="flex items-center gap-2">
+                    <td className={`${cell} sticky left-0 z-[1] pl-3.5 transition-colors duration-700 ${bg || 'bg-card'}`}>
+                      <div className="flex items-center gap-1.5">
                         {!placement && <GripVertical aria-hidden className="-ml-3 h-3.5 w-3.5 shrink-0 cursor-grab text-muted" />}
                         <ColorDot color={s.color ?? r.color} />
-                        <span className="max-w-56 truncate font-medium text-ink" title={s.name}>
+                        <span className="max-w-28 truncate font-medium text-ink 2xl:max-w-40" title={s.name}>
                           {s.name}
                         </span>
                         {line.quantity > 1 && (
@@ -525,22 +566,34 @@ export function ItemTable() {
                         {placement?.pinned && <Pin aria-label="Pinned" className="h-3 w-3 text-accent-strong" />}
                       </div>
                     </td>
-                    <td className={`${cell} font-mono text-ink-soft`}>{s.sku || '-'}</td>
-                    <td className={`${cell} text-ink-soft`}>{s.origin || '-'}</td>
-                    <td className={`${cell} text-ink-soft`}>{s.category || '-'}</td>
+                    <td className={`${cell} font-mono text-ink-soft`}>
+                      <span className={`${truncate} max-w-20`} title={s.sku || undefined}>
+                        {s.sku || '-'}
+                      </span>
+                    </td>
+                    <td className={`${cell} text-ink-soft`}>
+                      <span className={`${truncate} max-w-16`} title={s.origin || undefined}>
+                        {s.origin || '-'}
+                      </span>
+                    </td>
+                    <td className={`${cell} text-ink-soft`}>
+                      <span className={`${truncate} max-w-20`} title={s.category || undefined}>
+                        {s.category || '-'}
+                      </span>
+                    </td>
                     <td className={`${cell} text-right`}>
                       <InlineNumber display={line.quantity} value={line.quantity} digits={0} min={1} label="Quantity" disabled={locked} onCommit={(n) => store().updateLine(line.id, { quantity: Math.round(n) })} />
-                      {s.liquid ? (
-                        <div className="max-w-40 truncate text-[10.5px] text-muted" title={s.liquid.name}>
-                          {formatLitres(s.liquid.volumeL, sys, 0)} {s.liquid.name}
+                      {s.material ? (
+                        <div className="ml-auto max-w-20 truncate text-[10.5px] text-muted" title={`${formatMaterialVolume(s.material.volumeL, s.material.state, sys)} ${s.material.name}`}>
+                          {formatMaterialVolume(s.material.volumeL, s.material.state, sys)} {s.material.name}
                         </div>
                       ) : (
-                        line.contents && <div className="max-w-32 truncate text-[10.5px] text-muted" title={line.contents}>{line.contents}</div>
+                        line.contents && <div className="ml-auto max-w-20 truncate text-[10.5px] text-muted" title={line.contents}>{line.contents}</div>
                       )}
                     </td>
-                    <td className={`${cell} font-mono num text-ink-soft`}>{isBulkLiquid(s) ? <span className="text-muted" title="Bulk fill: carried in a tanker compartment">—</span> : formatDims(s.dims, sys)}</td>
+                    <td className={`${cell} num text-[11px] text-ink-soft`}>{isBulk(s) ? <span className="text-muted" title="Loose bulk: carried in a tank compartment or dump body">—</span> : formatDims(s.dims, sys)}</td>
                     <td className={`${cell} text-right`}>
-                      {s.liquid ? (
+                      {s.material ? (
                         <span className="px-1 font-mono num" title="Calculated: volume × density + container">
                           {formatWeight(s.weightKg, sys)}
                         </span>
@@ -557,8 +610,8 @@ export function ItemTable() {
                       )}
                     </td>
                     <td className={`${cell} font-mono num text-ink-soft`}>
-                      {activeTanker && isBulkLiquid(s) && (!placement || placement.vehicleId === activeTanker.id) ? (
-                        <CompartmentCell plan={plan} vehicle={activeTanker} unitId={unit.id} current={placement?.compartmentId} disabled={locked} />
+                      {activeBulk && isBulk(s) && vehicleSuits(s, activeBulk) && (!placement || placement.vehicleId === activeBulk.id) ? (
+                        <CompartmentCell plan={plan} vehicle={activeBulk} unitId={unit.id} current={placement?.compartmentId} disabled={locked} />
                       ) : placement ? (
                         <>
                           {plan.vehicles.length > 1 && <span className="text-muted">T{r.vehicleIndex + 1} · </span>}
@@ -569,9 +622,9 @@ export function ItemTable() {
                       )}
                     </td>
                     <td className={cell}>
-                      <span className="flex items-center gap-1.5 text-ink-soft">
+                      <span className="flex items-center gap-1.5 text-ink-soft" title={r.customer?.name}>
                         <ColorDot color={r.color} size={8} />
-                        <span className="max-w-36 truncate">{r.customer?.name ?? '-'}</span>
+                        <span className="max-w-20 truncate 2xl:max-w-28">{r.customer?.name ?? '-'}</span>
                       </span>
                     </td>
                     <td className={cell}>
@@ -589,7 +642,7 @@ export function ItemTable() {
                     </td>
                     <td className={cell}>
                       {s.hazmat ? (
-                        <span className="inline-flex items-center gap-1.5" title={`Class ${s.hazmat.hazClass} · ${HAZMAT_CLASS_NAMES[s.hazmat.hazClass] ?? ''}${s.hazmat.packingGroup ? ` · PG ${s.hazmat.packingGroup}` : ''}`}>
+                        <span className="inline-flex items-center gap-1" title={`Class ${s.hazmat.hazClass} · ${HAZMAT_CLASS_NAMES[s.hazmat.hazClass] ?? ''}${s.hazmat.packingGroup ? ` · PG ${s.hazmat.packingGroup}` : ''}`}>
                           <span className="inline-grid h-4 min-w-6 place-items-center rounded px-1 font-mono text-[10px] font-bold text-white" style={{ background: hazmatColor(s.hazmat.hazClass) }}>
                             {s.hazmat.hazClass}
                           </span>
@@ -604,8 +657,8 @@ export function ItemTable() {
                         <UnitStatusChip status={r.status} />
                       </span>
                     </td>
-                    <td className={`${cell} pr-4`} onClick={stopPropagation}>
-                      <div className="flex items-center justify-end gap-0.5">
+                    <td className={`${cell} pr-3`} onClick={stopPropagation}>
+                      <div className="flex items-center justify-end [&>button]:h-6! [&>button]:w-6!">
                         {placement ? (
                           <>
                             <IconButton size="sm" label={placement.pinned ? 'Unpin' : 'Pin (optimiser keeps it)'} active={placement.pinned} disabled={locked} onClick={() => store().togglePin(unit.id)}>
@@ -626,6 +679,17 @@ export function ItemTable() {
                         <IconButton size="sm" label="Duplicate line" disabled={locked} onClick={() => duplicate(r)}>
                           <Copy className="h-3.5 w-3.5" />
                         </IconButton>
+                        {splits.get(line.id) && (
+                          <IconButton
+                            size="sm"
+                            label={`Split into legal loads: ${splits.get(line.id)!.count * line.quantity} × ${formatMaterialVolume(splits.get(line.id)!.volumeL, s.material!.state, sys, 1)}`}
+                            disabled={locked}
+                            onClick={() => split(line, splits.get(line.id)!)}
+                            className="text-bad hover:bg-bad-soft"
+                          >
+                            <Scissors className="h-3.5 w-3.5" />
+                          </IconButton>
+                        )}
                         <IconButton size="sm" label="Delete line" disabled={locked} onClick={() => remove(r)} className="hover:text-bad">
                           <Trash2 className="h-3.5 w-3.5" />
                         </IconButton>

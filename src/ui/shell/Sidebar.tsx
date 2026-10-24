@@ -6,7 +6,7 @@ import { routeKm } from '../../physics/fuel';
 import { useEvaluation, useUnitSystem } from '../../state/hooks';
 import { useStore, type NavPanel } from '../../state/store';
 import { scrollToItemTable, useLoadSimulation } from './navigation';
-import { HEALTH_DOT, vehicleHealth } from './shellFormat';
+import { countLabel, HEALTH_DOT, vehicleHealth } from './shellFormat';
 import { StopList } from './StopList';
 import { VehicleList } from './VehicleList';
 
@@ -106,7 +106,7 @@ export function Sidebar() {
                   <span className="flex-1 truncate font-medium text-ink-soft">{v.name}</span>
                 </div>
                 <p className="num pl-3 text-muted">
-                  {ve.fill.units} {v.tank ? 'fills' : 'units'} · {formatMass(ve.axle.cargoKg, sys)} · {formatPercent(ve.fill.volume)} {v.tank ? 'full' : 'vol'}
+                  {countLabel(ve.fill.units, v.bulk ? 'fill' : 'unit')} · {formatMass(ve.axle.cargoKg, sys)} · {formatPercent(ve.fill.volume)} {v.bulk ? 'full' : 'vol'}
                 </p>
               </li>
             );

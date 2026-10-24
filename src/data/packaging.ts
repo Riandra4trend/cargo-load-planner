@@ -98,12 +98,12 @@ export const PACKAGING_PRESETS: Record<PackagingKind, PackagingPreset> = {
     capacityL: 23,
     nominalL: 20,
   },
-  'bulk-liquid': {
-    label: 'Bulk liquid (tanker compartment)',
+  bulk: {
+    label: 'Bulk (tank compartment or dump body)',
     palletHeight: 0,
     tareKg: 0,
     shape: 'box',
-    note: 'Carried in a tanker compartment; weight = volume × density',
+    note: 'Loose in a tanker compartment (liquids) or a dump body (dry bulk); weight = volume × density',
   },
   'long-goods': {
     label: 'Long goods bundle',

@@ -15,7 +15,10 @@ import {
   removeZone,
   scaleZones,
   splitCompartment,
+  struckLitres,
   validateVehicle,
+  withBody,
+  withCargo,
   withKind,
   withStaticsType,
 } from './vehicleDraft';
@@ -89,7 +92,7 @@ describe('tanker editing', () => {
   it('creates a default tank when the body becomes a tanker and removes it again', () => {
     const rigid = createCustomVehicle();
     const tanker = withKind(rigid, 'tanker');
-    const tank = tanker.tank!;
+    const tank = tanker.bulk!;
     expect(tank.compartments).toHaveLength(4);
     expect(tank.compartments.map((c) => c.label)).toEqual(['C1', 'C2', 'C3', 'C4']);
     expect(new Set(tank.compartments.map((c) => c.capacityL)).size).toBe(1);
@@ -97,18 +100,18 @@ describe('tanker editing', () => {
     expect(total).toBeLessThanOrEqual(barrelLitres(rigid) * 0.9);
     expect(total).toBeGreaterThan(barrelLitres(rigid) * 0.9 - 400);
     expect(tank.compartments[3].toX).toBe(rigid.cargo.l);
-    expect(tank).toMatchObject({ baffled: false, foodGrade: false, insulated: false, pressurised: false });
+    expect(tank).toMatchObject({ kind: 'tank', baffled: false, foodGrade: false, insulated: false, pressurised: false });
     expect(isAutoLayout(tank.compartments, rigid.cargo.l)).toBe(true);
     expect(errorsOf(tanker)).toEqual([]);
 
-    expect(withStaticsType(tanker, 'artic').tank).toEqual(tank);
-    expect('tank' in withKind(tanker, 'rigid')).toBe(false);
+    expect(withStaticsType(tanker, 'artic').bulk).toEqual(tank);
+    expect('bulk' in withKind(tanker, 'rigid')).toBe(false);
   });
 
   it('splits, merges and reorders compartments, keeping them contiguous', () => {
     const v = createVehicle('tanker-semi-32k');
     const L = v.cargo.l;
-    const list = v.tank!.compartments;
+    const list = v.bulk!.compartments;
     const split = splitCompartment(list, L, true);
     expect(split.map((c) => c.capacityL)).toEqual([4000, 4000, 6000, 6000, 6000, 6000]);
     expect(split.map((c) => c.label)).toEqual(['C1', 'C2', 'C3', 'C4', 'C5', 'C6']);
@@ -139,8 +142,8 @@ describe('tanker editing', () => {
 
   it('validates compartments, labels, barrel volume and the water payload', () => {
     const v = createVehicle('tanker-rigid-16k');
-    const tank = v.tank!;
-    const withList = (compartments: typeof tank.compartments): Vehicle => ({ ...v, tank: { ...tank, compartments } });
+    const tank = v.bulk!;
+    const withList = (compartments: typeof tank.compartments): Vehicle => ({ ...v, bulk: { ...tank, compartments } });
     const gap = tank.compartments.map((c, i) => (i === 1 ? { ...c, fromX: c.fromX + 0.2 } : c));
     expect(errorsOf(withList(gap)).some((e) => /contiguous/.test(e.message))).toBe(true);
     const zero = tank.compartments.map((c, i) => (i === 0 ? { ...c, capacityL: 0 } : c));
@@ -149,9 +152,64 @@ describe('tanker editing', () => {
     expect(errorsOf(withList(dup)).some((e) => /unique/.test(e.message))).toBe(true);
     const huge = tank.compartments.map((c, i) => (i === 0 ? { ...c, capacityL: 9000 } : c));
     expect(errorsOf(withList(huge)).some((e) => /C1: .* does not fit/.test(e.message))).toBe(true);
-    expect(errorsOf({ ...v, tank: undefined }).some((e) => /at least one tank compartment/.test(e.message))).toBe(true);
+    expect(errorsOf({ ...v, bulk: undefined }).some((e) => /at least one tank compartment/.test(e.message))).toBe(true);
 
     expect(warningsOf(v).some((w) => /full load of water/.test(w.message))).toBe(false);
     expect(warningsOf({ ...v, payloadKg: 12_000 }).some((w) => /full load of water/.test(w.message))).toBe(true);
+  });
+});
+
+describe('dump trucks and body styles', () => {
+  const warningsOf = (v: Vehicle) => validateVehicle(v, 'metric').filter((i) => i.level === 'warning');
+
+  it('creates a dump body sized from the inside dims and keeps it in sync', () => {
+    const rigid = createVehicle('eu-rigid-18');
+    const tipper = withKind({ ...rigid, body: 'curtain' }, 'tipper');
+    expect(tipper.kind).toBe('tipper');
+    expect(tipper.body).toBeUndefined();
+    expect(tipper.access).toEqual(['top', 'rear']);
+    expect(tipper.bulk).toEqual({
+      kind: 'tipper',
+      compartments: [{ id: 'body', label: 'Body', fromX: 0, toX: rigid.cargo.l, capacityL: struckLitres(rigid.cargo) }],
+      baffled: false,
+      foodGrade: false,
+      insulated: false,
+      pressurised: false,
+    });
+
+    const resized = withCargo(tipper, { l: 5.8, w: 2.3, h: 1.2 }, true);
+    expect(resized.bulk?.compartments).toEqual([{ id: 'body', label: 'Body', fromX: 0, toX: 5.8, capacityL: 16_008 }]);
+
+    // tank <-> tipper <-> none
+    const tanker = withKind(tipper, 'tanker');
+    expect(tanker.bulk?.kind).toBe('tank');
+    expect(withKind(tanker, 'tipper').bulk?.kind).toBe('tipper');
+    expect('bulk' in withKind(tipper, 'rigid')).toBe(false);
+  });
+
+  it('accepts the dump-truck presets and warns that a level-full body of dry sand is over the payload', () => {
+    const tronton = createVehicle('id-dump-tronton');
+    expect(errorsOf(tronton)).toEqual([]);
+    const sand = warningsOf(tronton).find((w) => /level-full body of dry sand/.test(w.message));
+    expect(sand?.message).toBe('A level-full body of dry sand weighs 25.61 t, 10.61 t over the payload. Normal for dump trucks; the planner shows the legal fill');
+
+    const light = { ...tronton, payloadKg: 30_000 };
+    expect(warningsOf(light).some((w) => /dry sand/.test(w.message))).toBe(false);
+
+    const flat = withCargo(tronton, { ...tronton.cargo, h: 0 }, true);
+    expect(errorsOf(flat).some((e) => /Dump body capacity must be greater than 0/.test(e.message))).toBe(true);
+  });
+
+  it('applies body styles: wingbox and dropside open the sides and top, dropside drops the walls', () => {
+    const v = createVehicle('id-cdd-box');
+    const wing = withBody(v, 'wingbox');
+    expect(wing).toMatchObject({ body: 'wingbox', walls: true, access: ['rear', 'side', 'top'] });
+    const drop = withBody(v, 'dropside');
+    expect(drop).toMatchObject({ body: 'dropside', walls: false, access: ['rear', 'side', 'top'] });
+    expect(withBody(v, 'curtain')).toMatchObject({ body: 'curtain', walls: true, access: ['rear', 'side'] });
+    const box = withBody(drop, 'box');
+    expect('body' in box).toBe(false);
+    expect(box.walls).toBe(true);
+    expect(box.access).toEqual(['rear', 'side']);
   });
 });

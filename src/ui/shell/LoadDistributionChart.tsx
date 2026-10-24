@@ -3,6 +3,7 @@ import { useId } from 'react';
 import { bigLengthUnit, formatLength, formatMass, formatNumber, fromKg, fromMetres, toKg, toMetres } from '../../domain/units';
 import type { CurvePoint } from '../../domain/types';
 import { useUnitSystem } from '../../state/hooks';
+import { frontLabel } from './bulk';
 import { Section } from './Section';
 import { lowerFirst, niceTicks, STATUS_COLOR } from './shellFormat';
 import type { ShownState } from './useShownState';
@@ -28,7 +29,7 @@ export function LoadDistributionChart({ shown }: { shown: ShownState }) {
   const clipId = `ldc${useId().replace(/[^\w-]/g, '')}`;
   const { vehicleEval: ve, axle, remaining } = shown;
   const v = ve.vehicle;
-  const front = v.tank ? 'tank front' : 'front wall';
+  const front = frontLabel(v);
   const curve = ve.curve;
   const lenUnit = bigLengthUnit(sys);
   const massUnit = sys === 'metric' ? 't' : 'lb';

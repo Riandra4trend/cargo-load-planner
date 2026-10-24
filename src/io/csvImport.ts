@@ -1,9 +1,9 @@
 import Papa from 'papaparse';
 import { PACKAGING_PRESETS } from '../data/packaging';
-import { CUSTOM_LIQUID_ID, LIQUIDS, maxFillPct, type LiquidDef } from '../domain/liquids';
+import { CUSTOM_MATERIAL_ID, MATERIAL_LIBRARY, maxFillPct, type MaterialDef } from '../domain/materials';
 import { HAZMAT_CLASSES } from '../domain/settings';
-import type { CargoLine, Dims, Hazmat, ItemSpec, LiquidContents, PackagingKind, PackingGroup, Plan, Priority, RotationRule, Shape, Stop, TempClass } from '../domain/types';
-import { formatDensity, formatLiquidDensity, formatLitres, formatWeight, L_PER_US_GAL, lbToKg, toKg, toMetres, type LengthUnit, type WeightUnit } from '../domain/units';
+import type { CargoLine, Dims, Hazmat, ItemSpec, MaterialContents, MaterialState, PackagingKind, PackingGroup, Plan, Priority, RotationRule, Shape, Stop, TempClass, UnitSystem } from '../domain/types';
+import { formatDensity, formatMaterialDensity, formatMaterialVolume, formatWeight, L_PER_CU_YD, L_PER_US_GAL, lbToKg, M_PER_FT, toKg, toMetres, type LengthUnit, type WeightUnit } from '../domain/units';
 
 /**
  * Bulk item import from CSV / TSV text (files or spreadsheet paste). Pure: parse -> auto-map columns ->
@@ -69,7 +69,8 @@ export type ImportField =
   | 'category'
   | 'origin'
   | 'notes'
-  | 'liquid'
+  | 'material'
+  | 'materialState'
   | 'volume'
   | 'density'
   | 'containerCapacity';
@@ -80,8 +81,8 @@ export interface FieldDef {
   field: ImportField;
   label: string;
   kind: FieldKind;
-  group: 'Item' | 'Delivery' | 'Handling' | 'Liquid' | 'Hazmat' | 'Details';
-  /** Required unless a liquid column is mapped (liquid rows derive size and weight). */
+  group: 'Item' | 'Delivery' | 'Handling' | 'Material' | 'Hazmat' | 'Details';
+  /** Required unless a material column is mapped (material rows derive size and weight). */
   required?: boolean;
 }
 
@@ -117,21 +118,22 @@ export const IMPORT_FIELDS: FieldDef[] = [
   { field: 'category', label: 'Category', kind: 'text', group: 'Details' },
   { field: 'origin', label: 'Origin', kind: 'text', group: 'Details' },
   { field: 'notes', label: 'Notes', kind: 'text', group: 'Details' },
-  { field: 'liquid', label: 'Liquid (name or id)', kind: 'text', group: 'Liquid' },
-  { field: 'volume', label: 'Volume per unit', kind: 'volume', group: 'Liquid' },
-  { field: 'density', label: 'Density', kind: 'density', group: 'Liquid' },
-  { field: 'containerCapacity', label: 'Container capacity (other container)', kind: 'volume', group: 'Liquid' },
+  { field: 'material', label: 'Material (liquid or dry bulk)', kind: 'text', group: 'Material' },
+  { field: 'materialState', label: 'Liquid / solid', kind: 'choice', group: 'Material' },
+  { field: 'volume', label: 'Volume per unit', kind: 'volume', group: 'Material' },
+  { field: 'density', label: 'Density', kind: 'density', group: 'Material' },
+  { field: 'containerCapacity', label: 'Container capacity (other container)', kind: 'volume', group: 'Material' },
 ];
 
-/** Fields that still need a column. Liquid rows derive size from the container and weight from volume × density. */
+/** Fields that still need a column. Material rows derive size from the container and weight from volume × density. */
 export function missingRequiredFields(mapping: FieldMapping): FieldDef[] {
-  if (mapping.liquid !== undefined) return [];
+  if (mapping.material !== undefined) return [];
   return IMPORT_FIELDS.filter((f) => f.required && mapping[f.field] === undefined);
 }
 
 /** Normalised header keys (lowercase, alphanumerics only, unit suffix removed) per field. */
 const ALIASES: Record<ImportField, string[]> = {
-  name: ['name', 'item', 'itemname', 'description', 'desc', 'itemdescription', 'product', 'productname', 'goods', 'title'],
+  name: ['name', 'item', 'itemname', 'description', 'desc', 'itemdescription', 'goods', 'title'],
   sku: ['sku', 'article', 'articleno', 'articlenumber', 'artno', 'itemno', 'itemnumber', 'itemcode', 'partno', 'partnumber', 'productcode', 'code', 'ref', 'reference'],
   length: ['length', 'l', 'len', 'lng'],
   width: ['width', 'w', 'wid', 'breadth'],
@@ -159,14 +161,21 @@ const ALIASES: Record<ImportField, string[]> = {
   unNumber: ['un', 'unnumber', 'unno', 'unid', 'unnr', 'idnumber'],
   hazClass: ['class', 'hazmatclass', 'hazardclass', 'hazclass', 'dgclass', 'adrclass', 'hazmat', 'division', 'dangerousgoodsclass'],
   packingGroup: ['packinggroup', 'pg', 'packgroup'],
-  category: ['category', 'cat', 'type', 'producttype', 'commodity'],
+  category: ['category', 'cat', 'type', 'producttype'],
   origin: ['origin', 'countryoforigin', 'coo', 'country', 'madein'],
   notes: ['notes', 'note', 'remarks', 'remark', 'comment', 'comments', 'instructions'],
-  liquid: ['liquid', 'liquidtype', 'liquidname', 'liquidid', 'fluid', 'fluidtype'],
-  volume: ['volume', 'vol', 'volumeperunit', 'fillvolume', 'fill', 'netvolume', 'volumeusgal'],
-  density: ['density', 'sg', 'specificgravity', 'densitykgl', 'densitykgperl', 'densitylbgal', 'densitylbpergal', 'densitykgm3', 'densitykgperm3'],
+  material: ['material', 'materialname', 'materialid', 'liquid', 'liquidtype', 'liquidname', 'liquidid', 'fluid', 'fluidtype', 'bulkmaterial', 'muatan'],
+  materialState: ['materialstate', 'matterstate', 'phase', 'liquidorsolid'],
+  volume: ['volume', 'vol', 'volumeperunit', 'fillvolume', 'fill', 'netvolume', 'volumeusgal', 'volumecum', 'volumecuyd', 'cbm'],
+  density: ['density', 'sg', 'specificgravity', 'bulkdensity', 'densitykgl', 'densitykgperl', 'densitylbgal', 'densitylbpergal', 'densitykgm3', 'densitykgperm3', 'densitytm3', 'densitytonm3', 'densitylbft3', 'densitylbcuft'],
   containerCapacity: ['containercapacity', 'containercapacityl', 'capacity', 'containervolume', 'brimcapacity'],
 };
+
+/**
+ * Headers that name a material in a bulk sheet ("Commodity: sand") but the goods themselves in an ordinary
+ * item list ("Product: TV"): they map to the material only when the sheet also has a volume or density column.
+ */
+const MATERIAL_WHEN_MEASURED: Record<string, ImportField> = { product: 'name', productname: 'name', commodity: 'category' };
 
 const FIELD_BY_ALIAS = new Map<string, ImportField>(
   (Object.entries(ALIASES) as [ImportField, string[]][]).flatMap(([field, keys]) => keys.map((k) => [k, field] as const)),
@@ -177,7 +186,8 @@ const CONTAINS: [string, ImportField][] = [
   ['density', 'density'],
   ['containercapacity', 'containerCapacity'],
   ['volume', 'volume'],
-  ['liquid', 'liquid'],
+  ['liquid', 'material'],
+  ['material', 'material'],
   ['palletheight', 'palletHeight'],
   ['loadontop', 'maxLoadOnTop'],
   ['weight', 'weight'],
@@ -196,12 +206,19 @@ const CONTAINS: [string, ImportField][] = [
   ['name', 'name'],
 ];
 
-export type VolumeUnit = 'L' | 'gal';
-export type DensityUnit = 'kg/L' | 'lb/gal' | 'kg/m3';
-export const VOLUME_UNITS: VolumeUnit[] = ['L', 'gal'];
-export const DENSITY_UNITS: DensityUnit[] = ['kg/L', 'lb/gal', 'kg/m3'];
+/** 'auto': liquids in L (imperial: US gal), dry bulk in m³ (imperial: yd³). */
+export type VolumeUnit = 'auto' | 'L' | 'gal' | 'm3' | 'yd3';
+/** 'auto': liquids in kg/L (imperial: lb/gal), dry bulk in t/m³ (imperial: lb/ft³). t/m³ equals kg/L numerically. */
+export type DensityUnit = 'auto' | 'kg/L' | 't/m3' | 'kg/m3' | 'lb/gal' | 'lb/ft3';
+export const VOLUME_UNITS: VolumeUnit[] = ['auto', 'L', 'gal', 'm3', 'yd3'];
+export const DENSITY_UNITS: DensityUnit[] = ['auto', 'kg/L', 't/m3', 'kg/m3', 'lb/gal', 'lb/ft3'];
+type FixedVolumeUnit = Exclude<VolumeUnit, 'auto'>;
+type FixedDensityUnit = Exclude<DensityUnit, 'auto'>;
+const LITRES_PER: Record<FixedVolumeUnit, number> = { L: 1, gal: L_PER_US_GAL, m3: 1000, yd3: L_PER_CU_YD };
+/** kg/L per unit of each density unit. */
+const KG_PER_L_PER: Record<FixedDensityUnit, number> = { 'kg/L': 1, 't/m3': 1, 'kg/m3': 0.001, 'lb/gal': lbToKg(1) / L_PER_US_GAL, 'lb/ft3': lbToKg(1) / (M_PER_FT ** 3 * 1000) };
 
-type UnitToken = { kind: 'length'; unit: LengthUnit } | { kind: 'weight'; unit: WeightUnit } | { kind: 'volume'; unit: VolumeUnit };
+type UnitToken = { kind: 'length'; unit: LengthUnit } | { kind: 'weight'; unit: WeightUnit } | { kind: 'volume'; unit: FixedVolumeUnit };
 
 const UNIT_TOKENS: Record<string, UnitToken> = {};
 const addTokens = (token: UnitToken, words: string[]) => words.forEach((w) => (UNIT_TOKENS[w] = token));
@@ -215,13 +232,18 @@ addTokens({ kind: 'weight', unit: 't' }, ['t', 'ton', 'tons', 'tonne', 'tonnes']
 addTokens({ kind: 'weight', unit: 'lb' }, ['lb', 'lbs', 'pound', 'pounds']);
 addTokens({ kind: 'volume', unit: 'L' }, ['l', 'lt', 'ltr', 'ltrs', 'litre', 'litres', 'liter', 'liters']);
 addTokens({ kind: 'volume', unit: 'gal' }, ['gal', 'gals', 'gallon', 'gallons', 'usgal']);
+addTokens({ kind: 'volume', unit: 'm3' }, ['m3', 'm³', 'cum', 'cbm', 'cubicmeter', 'cubicmeters', 'cubicmetre', 'cubicmetres', 'kubik']);
+addTokens({ kind: 'volume', unit: 'yd3' }, ['yd3', 'yd³', 'cuyd', 'cuyds', 'cubicyard', 'cubicyards']);
 
-/** Header -> normalised key and the unit named in it ("Length (in)", "weight_kg", "Height [mm]"). */
+/** Unit token for a written unit, ignoring spaces and a trailing dot ("cu m", "m³", "yd3."). */
+const unitToken = (written: string): UnitToken | undefined => UNIT_TOKENS[written.toLowerCase().replace(/[\s.]/g, '')];
+
+/** Header -> normalised key and the unit named in it ("Length (in)", "weight_kg", "Height [mm]", "Volume (m³)", "Volume (cu yd)"). */
 function analyseHeader(header: string): { key: string; unit?: UnitToken } {
   const h = header.trim().toLowerCase();
   if (h.length > 1 && UNIT_TOKENS[h]) return { key: '', unit: UNIT_TOKENS[h] };
-  const m = /^(.*?)\s*[([]\s*([a-z"]+)\.?\s*[)\]]$/.exec(h) ?? /^(.*?)[\s_\-/]+([a-z"]+)\.?$/.exec(h);
-  const unit = m ? UNIT_TOKENS[m[2]] : undefined;
+  const m = /^(.*?)\s*[([]\s*([a-z"³][a-z0-9³ ]*?)\.?\s*[)\]]$/.exec(h) ?? /^(.*?)[\s_\-/]+([a-z"³][a-z0-9³]*)\.?$/.exec(h);
+  const unit = m ? unitToken(m[2]) : undefined;
   const base = unit && m ? m[1] : h;
   return { key: base.replace(/[^a-z0-9]/g, ''), unit };
 }
@@ -235,9 +257,9 @@ export interface AutoMapResult {
   lengthUnit?: LengthUnit;
   /** Unit named in the weight headers, if any. */
   weightUnit?: WeightUnit;
-  /** Unit named in the volume header ("Volume (gal)", "volume_l", "Litres"), if any. */
+  /** Unit named in the volume header ("Volume (gal)", "volume_l", "Volume (m³)", "Litres"), if any. */
   volumeUnit?: VolumeUnit;
-  /** Unit named in the density header ("Density (lb/gal)"), if any. */
+  /** Unit named in the density header ("Density (lb/gal)", "Bulk density t/m3"), if any. */
   densityUnit?: DensityUnit;
 }
 
@@ -245,12 +267,14 @@ const LENGTH_FIELDS: ImportField[] = ['length', 'width', 'height', 'palletHeight
 const WEIGHT_FIELDS: ImportField[] = ['weight', 'maxLoadOnTop'];
 const VOLUME_FIELDS: ImportField[] = ['volume', 'containerCapacity'];
 
-/** Density unit written in a header or cell: "lb/gal", "kg/m3", "kg/L". */
-function densityUnitIn(text: string): DensityUnit | undefined {
-  const t = text.toLowerCase().replace(/\s+/g, '');
+/** Density unit written in a header or cell: "lb/gal", "lb/ft³", "kg/m3", "t/m³", "kg/L". */
+function densityUnitIn(text: string): FixedDensityUnit | undefined {
+  const t = text.toLowerCase().replace(/[\s_]+/g, '');
   if (/lbs?(\/|per)(us)?gal/.test(t)) return 'lb/gal';
-  if (/kg(\/|per)m(3|³)/.test(t)) return 'kg/m3';
-  if (/(kg(\/|per)l|g\/ml|g\/cm(3|³))/.test(t)) return 'kg/L';
+  if (/(lbs?(\/|per)(cu)?(ft|foot)(3|³)?|pcf)/.test(t)) return 'lb/ft3';
+  if (/kg(\/|per)(m(3|³)|cbm|cum)/.test(t)) return 'kg/m3';
+  if (/(^|[^a-z])(t|ton|tons|tonne|tonnes)(\/|per)(m(3|³)|cbm|cum)/.test(t)) return 't/m3';
+  if (/(kg(\/|per)(l|ltr|litre|liter)\b|g\/ml|g\/cm(3|³))/.test(t)) return 'kg/L';
   return undefined;
 }
 
@@ -264,8 +288,14 @@ export function autoMapColumns(headers: string[]): AutoMapResult {
     mapping[field] = i;
     used.add(i);
   };
+  const measured = analysed.some(({ key, unit }) => unit?.kind === 'volume' || /volume|density|^vol$|^sg$|^cbm$/.test(key));
   analysed.forEach(({ key, unit }, i) => {
-    const field = FIELD_BY_ALIAS.get(key) ?? (key === '' && unit?.kind === 'weight' ? 'weight' : key === '' && unit?.kind === 'volume' ? 'volume' : undefined);
+    const ambiguous = MATERIAL_WHEN_MEASURED[key];
+    const field = ambiguous
+      ? measured
+        ? 'material'
+        : ambiguous
+      : (FIELD_BY_ALIAS.get(key) ?? (key === '' && unit?.kind === 'weight' ? 'weight' : key === '' && unit?.kind === 'volume' ? 'volume' : undefined));
     if (field) assign(field, i);
   });
   analysed.forEach(({ key }, i) => {
@@ -309,53 +339,98 @@ export function parseNumberCell(text: string): number {
   return /^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i.test(t) ? Number(t) : Number.NaN;
 }
 
-type MeasureKind = UnitToken['kind'];
-type MeasureUnit = LengthUnit | WeightUnit | VolumeUnit;
+/** A number with an optional written unit: "48 in", "1200mm", "10 m³", "2.5 cu m", "264 gal". */
+function splitUnit(text: string): { value: string; written?: string } {
+  const m = /^(.*?\d)\s*([a-z"³][a-z0-9³ ]*?)\.?$/i.exec(text.trim());
+  return m ? { value: m[1], written: m[2] } : { value: text.trim() };
+}
 
-/** Length, weight or volume cell in SI (m, kg, L); a unit written in the cell ("48 in", "1200mm", "500 lb", "264 gal") overrides the column unit. */
-function parseMeasure(text: string, kind: MeasureKind, unit: MeasureUnit): number | string {
-  let value = text.trim();
+/** Length or weight cell in SI (m, kg); a unit written in the cell ("48 in", "1200mm", "500 lb") overrides the column unit. */
+function parseMeasure(text: string, kind: 'length' | 'weight', unit: LengthUnit | WeightUnit): number | string {
+  const { value, written } = splitUnit(text);
   let u = unit;
-  const m = /^(.*?\d)\s*([a-z]+|")\.?$/i.exec(value);
-  if (m) {
-    const token = UNIT_TOKENS[m[2].toLowerCase()];
-    if (!token) return `unknown unit "${m[2]}"`;
-    if (token.kind !== kind) return `"${m[2]}" is not a ${kind} unit`;
+  if (written) {
+    const token = unitToken(written);
+    if (!token) return `unknown unit "${written}"`;
+    if (token.kind !== kind) return `"${written}" is not a ${kind} unit`;
     u = token.unit;
-    value = m[1];
   }
   const n = parseNumberCell(value);
   if (!Number.isFinite(n)) return 'is not a number';
-  if (kind === 'volume') return u === 'gal' ? n * L_PER_US_GAL : n;
   return kind === 'length' ? toMetres(n, u as LengthUnit) : toKg(n, u as WeightUnit);
 }
 
-/** Density cell in kg/L; a unit written in the cell ("7.0 lb/gal", "840 kg/m3") overrides the column unit. */
-function parseDensity(text: string, unit: DensityUnit): number | string {
+/** Volume unit written in a cell, if any (undefined when none is written or it is not a volume unit). */
+function writtenVolumeUnit(text: string): FixedVolumeUnit | undefined {
+  const { written } = splitUnit(text);
+  const token = written ? unitToken(written) : undefined;
+  return token?.kind === 'volume' ? token.unit : undefined;
+}
+
+/** Volume cell in litres; a unit written in the cell ("1000 L", "10 m³", "13 cu yd") overrides `unit`. */
+function parseVolume(text: string, unit: FixedVolumeUnit): number | string {
+  const { value, written } = splitUnit(text);
+  let u = unit;
+  if (written) {
+    const token = unitToken(written);
+    if (!token) return `unknown unit "${written}"`;
+    if (token.kind !== 'volume') return `"${written}" is not a volume unit`;
+    u = token.unit;
+  }
+  const n = parseNumberCell(value);
+  return Number.isFinite(n) ? n * LITRES_PER[u] : 'is not a number';
+}
+
+/** Density unit written after the number in a cell ("7.0 lb/gal", "1.6 t/m³"), if any. */
+function writtenDensityUnit(text: string): FixedDensityUnit | undefined {
+  const written = /^[-+]?[\d.,\s]*\d\s*(.+)$/.exec(text.trim())?.[1];
+  return written ? densityUnitIn(written) : undefined;
+}
+
+/** Density cell in kg/L (= t/m³); a unit written in the cell ("7.0 lb/gal", "1600 kg/m3", "1.6 t/m³") overrides `unit`. */
+function parseDensity(text: string, unit: FixedDensityUnit): number | string {
   const m = /^([-+]?[\d.,\s]*\d)\s*(.*)$/.exec(text.trim());
   if (!m) return 'is not a number';
   const n = parseNumberCell(m[1]);
   if (!Number.isFinite(n)) return 'is not a number';
   const written = m[2].trim();
   const u = written ? densityUnitIn(written) : unit;
-  if (!u) return `unknown density unit "${written}"`;
-  if (u === 'lb/gal') return lbToKg(n) / L_PER_US_GAL;
-  return u === 'kg/m3' ? n / 1000 : n;
+  return u ? n * KG_PER_L_PER[u] : `unknown density unit "${written}"`;
 }
 
-const liquidKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+/** Units that only make sense for one state of matter. kg/m³ is used for both, so it implies nothing. */
+const STATE_OF_VOLUME_UNIT: Record<FixedVolumeUnit, MaterialState> = { L: 'liquid', gal: 'liquid', m3: 'solid', yd3: 'solid' };
+const STATE_OF_DENSITY_UNIT: Partial<Record<FixedDensityUnit, MaterialState>> = { 'kg/L': 'liquid', 'lb/gal': 'liquid', 't/m3': 'solid', 'lb/ft3': 'solid' };
 
-/** Lookup keys per library liquid: id, full name, name without its bracketed part, and each bracketed / slash-separated alias. */
-const LIQUID_BY_KEY = new Map<string, LiquidDef>();
-for (const def of LIQUIDS) {
+/** The unit an 'auto' column means for a material state in the plan's unit system. */
+function resolveVolumeUnit(unit: VolumeUnit, state: MaterialState, sys: UnitSystem): FixedVolumeUnit {
+  if (unit !== 'auto') return unit;
+  if (state === 'liquid') return sys === 'metric' ? 'L' : 'gal';
+  return sys === 'metric' ? 'm3' : 'yd3';
+}
+
+function resolveDensityUnit(unit: DensityUnit, state: MaterialState, sys: UnitSystem): FixedDensityUnit {
+  if (unit !== 'auto') return unit;
+  if (state === 'liquid') return sys === 'metric' ? 'kg/L' : 'lb/gal';
+  return sys === 'metric' ? 't/m3' : 'lb/ft3';
+}
+
+/** Plausible densities, kg/L: liquids from LPG (0.54) to sulfuric acid (1.84); dry bulk from wood chips (≈ 0.3) to iron ore (≈ 2.6). */
+const DENSITY_RANGE: Record<MaterialState, [number, number]> = { liquid: [0.3, 3], solid: [0.1, 5] };
+
+const materialKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+/** Lookup keys per library material: id, full name, name without its bracketed part, and each bracketed / slash-separated alias. */
+const MATERIAL_BY_KEY = new Map<string, MaterialDef>();
+for (const def of MATERIAL_LIBRARY) {
   const bracket = /\(([^)]*)\)/.exec(def.name)?.[1] ?? '';
   const keys = [def.id, def.name, def.name.replace(/\([^)]*\)/, ''), ...def.name.split('/'), ...bracket.split(/[,/]/)];
-  for (const k of keys.map(liquidKey)) if (k && !LIQUID_BY_KEY.has(k)) LIQUID_BY_KEY.set(k, def);
+  for (const k of keys.map(materialKey)) if (k && !MATERIAL_BY_KEY.has(k)) MATERIAL_BY_KEY.set(k, def);
 }
 
-/** Library liquid by id or name, case-insensitive ("diesel", "Diesel (solar)", "solar", "crude oil", "CPO"). */
-export function findLiquid(text: string): LiquidDef | undefined {
-  return LIQUID_BY_KEY.get(liquidKey(text));
+/** Library material by id or name, case-insensitive ("diesel", "solar", "crude oil", "CPO", "sand-wet", "batubara"). */
+export function findMaterial(text: string): MaterialDef | undefined {
+  return MATERIAL_BY_KEY.get(materialKey(text));
 }
 
 const BOOL_WORDS: Record<string, boolean> = {
@@ -410,7 +485,7 @@ const PACKAGING: [RegExp, PackagingKind][] = [
   [/^(drum|barrel|steel drum|200 l drum|200l drum|200 l|200l)$/, 'drum'],
   [/^(ibc|tote|ibc tote|ibc tote 1000 l|1000 l ibc)$/, 'ibc'],
   [/^(jerrycan|jerry can|jerry-can|jerrycan 20 l|can|20 l can)$/, 'jerrycan'],
-  [/^(bulk-liquid|bulk|bulk liquid|tanker|tank|tanker compartment|compartment)$/, 'bulk-liquid'],
+  [/^(bulk|bulk-liquid|bulk liquid|bulk solid|loose bulk|curah|tanker|tank|tanker compartment|compartment|tipper|dump|dump truck|dump body)$/, 'bulk'],
   [/^(long-goods|long goods|long|bundle|profiles)$/, 'long-goods'],
   [/^(custom|other|other container|none|loose)$/, 'custom'],
 ];
@@ -472,11 +547,12 @@ export interface ImportResult {
 const NEW_STOP_PREFIX = 'new-stop:';
 const MAX_QUANTITY = 1000;
 const LARGE_QUANTITY = 300;
-/** Nominal box of a bulk fill (ignored by packing; matches makeBulkLiquidSpec). */
+/** Nominal box of a bulk fill (ignored by packing; matches makeBulkSpec). */
 const BULK_DIMS: Dims = { l: 1, w: 1, h: 1 };
-/** Plausible liquid densities, kg/L (LPG 0.54 … sulfuric acid 1.84, with margin). */
-const MIN_DENSITY = 0.3;
-const MAX_DENSITY = 3;
+const STATES: [RegExp, MaterialState][] = [
+  [/^(liquid|l|fluid|cair|wet bulk)$/, 'liquid'],
+  [/^(solid|s|dry|dry bulk|bulk solid|padat|granular|loose)$/, 'solid'],
+];
 
 /** Converts parsed rows into cargo lines (SI units) with validation; rows with errors are skipped. */
 export function rowsToLines(rows: string[][], mapping: FieldMapping, units: ImportUnits, plan: Plan): ImportResult {
@@ -513,13 +589,13 @@ export function rowsToLines(rows: string[][], mapping: FieldMapping, units: Impo
     };
     const label = (f: ImportField) => IMPORT_FIELDS.find((d) => d.field === f)!.label;
 
-    const measure = (f: ImportField, kind: MeasureKind, opts: { required?: boolean; positive?: boolean; signed?: boolean }): number | undefined => {
+    const measure = (f: ImportField, kind: 'length' | 'weight', opts: { required?: boolean; positive?: boolean; signed?: boolean }): number | undefined => {
       const text = cell(f);
       if (text === '') {
         if (opts.required) errors.push(`${label(f)} is missing`);
         return undefined;
       }
-      const v = parseMeasure(text, kind, kind === 'length' ? units.lengthUnit : kind === 'weight' ? units.weightUnit : units.volumeUnit);
+      const v = parseMeasure(text, kind, kind === 'length' ? units.lengthUnit : units.weightUnit);
       if (typeof v === 'string') {
         errors.push(`${label(f)} "${text}" ${v}`);
         return undefined;
@@ -527,6 +603,15 @@ export function rowsToLines(rows: string[][], mapping: FieldMapping, units: Impo
       if (opts.positive && v <= 0) errors.push(`${label(f)} must be greater than 0`);
       else if (!opts.signed && v < 0) errors.push(`${label(f)} must not be negative`);
       return v;
+    };
+    const volume = (f: ImportField, unit: FixedVolumeUnit): number | undefined => {
+      const text = cell(f);
+      if (text === '') return undefined;
+      const v = parseVolume(text, unit);
+      if (typeof v === 'string') errors.push(`${label(f)} "${text}" ${v}`);
+      else if (v <= 0) errors.push(`${label(f)} must be greater than 0`);
+      else return v;
+      return undefined;
     };
     const integer = (f: ImportField, fallback: number, min: number): number => {
       const text = cell(f);
@@ -554,59 +639,79 @@ export function rowsToLines(rows: string[][], mapping: FieldMapping, units: Impo
       return v ?? fallback;
     };
 
-    // packaging and liquid contents decide which columns a row needs
-    const liquidText = cell('liquid');
-    const def = liquidText ? findLiquid(liquidText) : undefined;
+    // packaging and material contents decide which columns a row needs
+    const materialText = cell('material');
+    const def = materialText ? findMaterial(materialText) : undefined;
+    const volumeText = cell('volume');
+    const densityText = cell('density');
     const dimsGiven = cell('length') !== '' || cell('width') !== '' || cell('height') !== '';
-    const packaging = choice('packaging', (t) => parseChoice(t, PACKAGING), liquidText && !dimsGiven ? 'bulk-liquid' : 'custom');
+    const packaging = choice('packaging', (t) => parseChoice(t, PACKAGING), materialText && !dimsGiven ? 'bulk' : 'custom');
     const preset = PACKAGING_PRESETS[packaging];
-    const bulk = packaging === 'bulk-liquid';
-    const isLiquid = liquidText !== '' || bulk;
+    const bulk = packaging === 'bulk';
+    // An unknown material name with nothing measured describes ordinary goods (e.g. a "Product" column).
+    const isMaterial = bulk || (materialText !== '' && (!!def || volumeText !== '' || densityText !== ''));
 
-    let liquid: LiquidContents | undefined;
-    if (isLiquid) {
-      if (!liquidText) errors.push('A bulk liquid row needs a liquid, e.g. diesel or water');
-      let volumeL = measure('volume', 'volume', { positive: true });
-      if (cell('volume') === '') {
+    let material: MaterialContents | undefined;
+    if (isMaterial) {
+      if (!materialText) errors.push('A bulk row needs a material, e.g. diesel, water, sand or coal');
+      const stateText = cell('materialState');
+      const stated = stateText ? parseChoice(stateText, STATES) : undefined;
+      if (stated === null) warnings.push(`${label('materialState')} "${stateText}" not recognised (use liquid or solid)`);
+      if (def && stated && stated !== def.state) warnings.push(`${def.name} is a ${def.state}; ignoring "${stateText}"`);
+      const unitHint = writtenDensityUnit(densityText) ?? (units.densityUnit === 'auto' ? undefined : units.densityUnit);
+      const volumeHint = writtenVolumeUnit(volumeText) ?? (units.volumeUnit === 'auto' ? undefined : units.volumeUnit);
+      const state: MaterialState =
+        def?.state ?? stated ?? (unitHint && STATE_OF_DENSITY_UNIT[unitHint]) ?? (volumeHint && STATE_OF_VOLUME_UNIT[volumeHint]) ?? 'liquid';
+
+      let volumeL = volume('volume', resolveVolumeUnit(units.volumeUnit, state, sys));
+      if (volumeText === '') {
         if (!bulk && preset.nominalL) volumeL = preset.nominalL;
         else errors.push('Volume is missing');
       }
-      const densityText = cell('density');
       let densityKgPerL = def?.densityKgPerL;
       if (densityText) {
-        const d = parseDensity(densityText, units.densityUnit);
+        const d = parseDensity(densityText, resolveDensityUnit(units.densityUnit, state, sys));
+        const [lo, hi] = DENSITY_RANGE[state];
         if (typeof d === 'string') errors.push(`Density "${densityText}" ${d}`);
-        else if (d < MIN_DENSITY || d > MAX_DENSITY) errors.push(`Density ${formatLiquidDensity(d, sys)} is implausible for a liquid: check the density unit`);
+        else if (d < lo || d > hi) errors.push(`Density ${formatMaterialDensity(d, state, sys)} is implausible for a ${state}: check the density unit`);
         else densityKgPerL = d;
-      } else if (liquidText && !def) errors.push(`"${liquidText}" is not in the liquid library: add a density column`);
+      } else if (materialText && !def) errors.push(`"${materialText}" is not in the material library: add a density column`);
       let containerCapacityL: number | undefined;
       if (cell('containerCapacity') !== '') {
-        if (bulk) warnings.push('Container capacity is ignored for bulk liquids');
-        else if (preset.capacityL) warnings.push(`Container capacity is ignored: a ${preset.label} holds ${formatLitres(preset.capacityL, sys, 0)}`);
-        else containerCapacityL = measure('containerCapacity', 'volume', { positive: true });
+        if (bulk) warnings.push('Container capacity is ignored for bulk loads');
+        else if (preset.capacityL) warnings.push(`Container capacity is ignored: a ${preset.label} holds ${formatMaterialVolume(preset.capacityL, state, sys, 0)}`);
+        else containerCapacityL = volume('containerCapacity', resolveVolumeUnit(units.volumeUnit, state, sys));
       }
-      if (liquidText && volumeL !== undefined && densityKgPerL !== undefined) {
-        liquid = { liquidId: def?.id ?? CUSTOM_LIQUID_ID, name: def?.name ?? liquidText, densityKgPerL, volumeL, ...(containerCapacityL ? { containerCapacityL } : {}) };
+      if (materialText && volumeL !== undefined && densityKgPerL !== undefined) {
+        material = {
+          materialId: def?.id ?? CUSTOM_MATERIAL_ID,
+          name: def?.name ?? materialText,
+          state,
+          densityKgPerL,
+          volumeL,
+          ...(containerCapacityL ? { containerCapacityL } : {}),
+        };
         const brim = bulk ? undefined : (preset.capacityL ?? containerCapacityL);
-        const pct = maxFillPct(liquid.liquidId);
+        const pct = maxFillPct(material.materialId, state);
         if (brim && volumeL > (brim * pct) / 100 + 1e-6) {
-          warnings.push(`Overfilled: ${formatLitres(volumeL, sys, 0)} in a ${formatLitres(brim, sys, 0)} container (max ${formatLitres((brim * pct) / 100, sys, 0)} at ${pct} %)`);
+          const v = (litres: number) => formatMaterialVolume(litres, state, sys, 0);
+          warnings.push(`Overfilled: ${v(volumeL)} in a ${v(brim)} container (max ${v((brim * pct) / 100)} at ${pct} %)`);
         }
       }
     }
 
     // identity
-    let name = cell('name') || def?.name || liquidText;
+    let name = cell('name') || def?.name || materialText;
     if (!name) {
       name = cell('sku') || `Item (row ${rowNo})`;
       warnings.push(`No name; using "${name}"`);
     }
 
-    // physical: liquid rows fall back to the container's size and derive the weight from volume × density
-    let l = measure('length', 'length', { required: !isLiquid, positive: true });
-    let w = measure('width', 'length', { required: !isLiquid, positive: true });
-    let h = measure('height', 'length', { required: !isLiquid, positive: true });
-    if (isLiquid && (l === undefined || w === undefined || h === undefined)) {
+    // physical: material rows fall back to the container's size and derive the weight from volume × density
+    let l = measure('length', 'length', { required: !isMaterial, positive: true });
+    let w = measure('width', 'length', { required: !isMaterial, positive: true });
+    let h = measure('height', 'length', { required: !isMaterial, positive: true });
+    if (isMaterial && (l === undefined || w === undefined || h === undefined)) {
       const fallback = bulk ? BULK_DIMS : preset.dims;
       if (fallback) {
         l ??= fallback.l;
@@ -614,9 +719,9 @@ export function rowsToLines(rows: string[][], mapping: FieldMapping, units: Impo
         h ??= fallback.h;
       } else errors.push('Length, width and height are missing, and this container has no standard size');
     }
-    let weightKg = measure('weight', 'weight', { required: !isLiquid, positive: true });
-    if (liquid) {
-      const computed = liquid.volumeL * liquid.densityKgPerL + (bulk ? 0 : preset.tareKg);
+    let weightKg = measure('weight', 'weight', { required: !isMaterial, positive: true });
+    if (material) {
+      const computed = material.volumeL * material.densityKgPerL + (bulk ? 0 : preset.tareKg);
       if (cell('weight') === '') weightKg = computed;
       else if (weightKg !== undefined && Math.abs(weightKg - computed) > 0.1 * computed) {
         warnings.push(`Weight ${formatWeight(weightKg, sys)} differs from volume × density${bulk ? '' : ' + container'} (${formatWeight(computed, sys)})`);
@@ -721,7 +826,7 @@ export function rowsToLines(rows: string[][], mapping: FieldMapping, units: Impo
     const spec: ItemSpec = {
       name,
       sku: cell('sku'),
-      category: cell('category') || (bulk ? 'Bulk liquid' : ''),
+      category: cell('category') || (bulk && material ? (material.state === 'liquid' ? 'Bulk liquid' : 'Dry bulk') : ''),
       origin: cell('origin'),
       shape,
       dims: { l, w, h },
@@ -739,7 +844,7 @@ export function rowsToLines(rows: string[][], mapping: FieldMapping, units: Impo
       isFood,
       ...(notes ? { notes } : {}),
       ...(hazmat ? { hazmat } : {}),
-      ...(liquid ? { liquid } : {}),
+      ...(material ? { material } : {}),
     };
     lines.push({ spec, quantity, stopId, priority, ...(contents ? { contents } : {}) });
     rowOfLine.push(rowNo);

@@ -1,14 +1,14 @@
 import { TEMP_COLORS } from '../../domain/colors';
 import { sliderPositions, vehicleTareKg } from '../../domain/presets';
 import type { CurvePoint, UnitSystem, Vehicle } from '../../domain/types';
-import { formatLength, formatLitres, formatMass } from '../../domain/units';
+import { formatLength, formatLitres, formatMass, formatMaterialVolume } from '../../domain/units';
 import { axleGroups, axlePositions } from '../../physics';
 
 /** viewBox width; matches the editor's preview column so 10–11 px text stays legible. */
 const W = 440;
 const WHEEL_R = 0.5;
 
-/** Side-view schematic of a vehicle definition: cab, cargo box with temperature zones (or tank compartments), axles, kingpin and slider holes. */
+/** Side-view schematic of a vehicle definition: cab, cargo box with temperature zones (or tank compartments / dump body), axles, kingpin and slider holes. */
 export function VehicleSchematic({ vehicle: v, sys, peakX }: { vehicle: Vehicle; sys: UnitSystem; peakX?: number }) {
   const s = v.statics;
   const L = v.cargo.l;
@@ -62,7 +62,22 @@ export function VehicleSchematic({ vehicle: v, sys, peakX }: { vehicle: Vehicle;
       {/* cab */}
       <rect x={X(cabFront)} y={Y(cabTop)} width={Math.max(0, X(cabRear) - X(cabFront))} height={(cabTop - chassisY + 0.1) * scale} rx={6} fill="var(--color-canvas)" stroke="var(--color-ink-soft)" strokeWidth={1.2} />
       <rect x={X(cabFront + 0.15)} y={Y(cabTop - 0.2)} width={Math.max(0, 0.7 * scale)} height={0.6 * scale} rx={3} fill="var(--color-info-soft)" stroke="var(--color-line-strong)" />
-      {v.tank ? (
+      {v.bulk?.kind === 'tipper' ? (
+        <g>
+          {/* open dump body: front wall, floor and tailgate; the dashed line is the struck (level-full) surface */}
+          <rect x={X(frame(0))} y={Y(top)} width={L * scale} height={v.cargo.h * scale} fill="var(--color-accent-soft)" opacity={0.6} />
+          <path
+            d={`M${X(frame(0))},${Y(top)} L${X(frame(0))},${Y(deck)} L${X(frame(L))},${Y(deck)} L${X(frame(L))},${Y(top)}`}
+            fill="none"
+            stroke="var(--color-ink)"
+            strokeWidth={2}
+          />
+          <line x1={X(frame(0))} x2={X(frame(L))} y1={Y(top)} y2={Y(top)} stroke="var(--color-accent-strong)" strokeDasharray="5 4" />
+          <text x={(X(frame(0)) + X(frame(L))) / 2} y={Y(deck + v.cargo.h / 2) + 4} textAnchor="middle" fontSize={10.5} fontWeight={600} fill="var(--color-ink-soft)" className="num">
+            Body {formatMaterialVolume(v.bulk.compartments[0]?.capacityL ?? 0, 'solid', sys, 1)}
+          </text>
+        </g>
+      ) : v.bulk ? (
         <g>
           {/* tank barrel with compartments */}
           <rect
@@ -70,12 +85,12 @@ export function VehicleSchematic({ vehicle: v, sys, peakX }: { vehicle: Vehicle;
             y={Y(top)}
             width={L * scale}
             height={v.cargo.h * scale}
-            rx={v.tank.pressurised ? (v.cargo.h * scale) / 2 : Math.min((v.cargo.h * scale) / 3, 16)}
+            rx={v.bulk.pressurised ? (v.cargo.h * scale) / 2 : Math.min((v.cargo.h * scale) / 3, 16)}
             fill="var(--color-canvas)"
             stroke="var(--color-ink)"
-            strokeWidth={v.tank.insulated ? 3 : 1.5}
+            strokeWidth={v.bulk.insulated ? 3 : 1.5}
           />
-          {v.tank.compartments.map((c, i) => {
+          {v.bulk.compartments.map((c, i) => {
             const cx = (X(frame(c.fromX)) + X(frame(c.toX))) / 2;
             const wide = (c.toX - c.fromX) * scale > 44;
             return (

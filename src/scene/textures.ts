@@ -1,4 +1,4 @@
-import { CanvasTexture, SRGBColorSpace } from 'three';
+import { CanvasTexture, RepeatWrapping, SRGBColorSpace } from 'three';
 
 /** Canvas-drawn textures (floor labels, hazmat diamonds, fragile glyphs), cached per key. */
 const cache = new Map<string, CanvasTexture>();
@@ -107,4 +107,24 @@ export function fragileTexture(): CanvasTexture {
     ctx.lineTo(56, 52);
     ctx.stroke();
   });
+}
+
+/** Grainy speckle texture (white base, multiplied by a material colour) for loose bulk heaps. */
+export function grainTexture(): CanvasTexture {
+  const tex = cached('grain', 128, 128, (ctx) => {
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, 128, 128);
+    let seed = 7;
+    const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+    for (let i = 0; i < 2600; i++) {
+      const v = Math.round(150 + rnd() * 105);
+      ctx.fillStyle = `rgb(${v}, ${v}, ${v})`;
+      const size = rnd() < 0.15 ? 2 : 1;
+      ctx.fillRect(Math.floor(rnd() * 128), Math.floor(rnd() * 128), size, size);
+    }
+  });
+  tex.wrapS = RepeatWrapping;
+  tex.wrapT = RepeatWrapping;
+  tex.repeat.set(6, 3);
+  return tex;
 }

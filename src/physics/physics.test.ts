@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { materialDef } from '../domain/materials';
 import { createVehicle, vehicleTareKg, VEHICLE_PRESETS } from '../domain/presets';
 import type { Stop, Vehicle } from '../domain/types';
 import {
@@ -8,10 +9,38 @@ import {
   computeStages,
   curvePeak,
   loadDistributionCurve,
+  maxLegalFill,
   remainingCapacity,
   withTrailerAxleX,
   type StagePoint,
 } from './index';
+
+describe('maxLegalFill', () => {
+  // Tronton dump truck: 11,000 kg tare, 15,000 kg payload, 26,000 kg gross, 16,008 L body centred at 2.9 m.
+  const v = createVehicle('id-dump-tronton', 'dump');
+  const body = v.bulk!.compartments[0];
+  const material = (id: string) => {
+    const def = materialDef(id)!;
+    return { materialId: def.id, state: def.state, densityKgPerL: def.densityKgPerL };
+  };
+
+  it('is weight-limited for dense material: wet sand stops at the rated payload', () => {
+    const r = maxLegalFill(v, [], body, material('sand-wet'));
+    expect(r.litres).toBeCloseTo(15_000 / 1.9, 6);
+    expect(r.limitedBy).toBe('Payload');
+  });
+
+  it('is volume-limited for light material: coal fills the body level first', () => {
+    const r = maxLegalFill(v, [], body, material('coal'));
+    expect(r.litres).toBeCloseTo(16_008, 6);
+    expect(r.limitedBy).toBe('Capacity');
+  });
+
+  it('counts the other cargo already aboard', () => {
+    const r = maxLegalFill(v, [{ id: 'other', x: 2.9, y: 1.15, z: 0.3, kg: 10_000 }], body, material('sand-wet'));
+    expect(r.litres).toBeCloseTo(5000 / 1.9, 6);
+  });
+});
 
 const TOL = 2; // toBeCloseTo digits => |diff| < 0.005 kg
 

@@ -2,10 +2,10 @@ import { Printer } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import { TEMP_LABELS } from '../../domain/colors';
-import { isBulkLiquid } from '../../domain/geometry';
+import { isBulk } from '../../domain/geometry';
 import { DISCLAIMER } from '../../domain/settings';
 import type { CargoUnit, Plan, UnitSystem, Vehicle } from '../../domain/types';
-import { formatConsumption, formatDims, formatDistance, formatLength, formatLiquidDensity, formatLitres, formatMass, formatMoney, formatPercent, formatWeight } from '../../domain/units';
+import { formatConsumption, formatDims, formatDistance, formatLength, formatLitres, formatMass, formatMaterialDensity, formatMoney, formatPercent, formatWeight } from '../../domain/units';
 import { routeKm } from '../../physics/fuel';
 import { loadingSequence } from '../../sim/sequence';
 import { evaluatePlan, type VehicleEval } from '../../state/evaluate';
@@ -15,8 +15,8 @@ import { Button } from '../common/Button';
 import { AxleStatusChip, ColorDot } from '../common/Chip';
 import { Modal } from '../common/Modal';
 import { PlanDiagram, PlanLegend } from './PlanDiagram';
-import { formatPlanDate, lowerFirst, SEVERITY_LABEL, SEVERITY_ORDER, STATUS_TEXT, stageShort, weightPair } from './shellFormat';
-import { compartmentRows, formatCargoLitres, litrePair, packagedContents, tankCapacityL, unitLitres } from './tanker';
+import { countLabel, formatPlanDate, lowerFirst, SEVERITY_LABEL, SEVERITY_ORDER, STATUS_TEXT, stageShort, weightPair } from './shellFormat';
+import { bulkState, bulkSummary, bulkTitle, compartmentRows, formatBulkVolume, frontLabel, overload, packagedContents, unitLitres, unitState, volumePair, type CompartmentRow } from './bulk';
 
 const DIAGRAM_WIDTH = 700;
 
@@ -65,13 +65,17 @@ function FuelReport({ plan, ve }: { plan: Plan; ve: VehicleEval }) {
   );
 }
 
-/** "22.61 t · 5 fills · 28,300 L", "17.38 t · 26 units", or both counts for mixed plans. */
+/** "22.61 t · 5 fills · 28,300 L", "17.38 t · 26 units", or both counts for mixed plans (liquid and solid volumes listed apart). */
 function totalCargoText(units: readonly CargoUnit[], totalKg: number, sys: UnitSystem): string {
-  const fills = units.filter((u) => isBulkLiquid(u.spec));
+  const fills = units.filter((u) => isBulk(u.spec));
   const others = units.length - fills.length;
   const parts = [formatMass(totalKg, sys)];
-  if (others > 0 || fills.length === 0) parts.push(`${others} unit${others === 1 ? '' : 's'}`);
-  if (fills.length > 0) parts.push(`${fills.length} fill${fills.length === 1 ? '' : 's'}`, formatCargoLitres(fills.reduce((sum, u) => sum + unitLitres(u), 0), sys));
+  if (others > 0 || fills.length === 0) parts.push(countLabel(others, 'unit'));
+  if (fills.length > 0) parts.push(countLabel(fills.length, 'fill'));
+  for (const state of ['liquid', 'solid'] as const) {
+    const litres = fills.filter((u) => unitState(u) === state).reduce((sum, u) => sum + unitLitres(u), 0);
+    if (litres > 0) parts.push(formatBulkVolume(litres, state, sys));
+  }
   return parts.join(' · ');
 }
 
@@ -88,72 +92,93 @@ function H({ children }: { children: string }) {
   return <h3 className="mb-1.5 mt-4 border-b border-line pb-1 text-[12px] font-semibold uppercase tracking-wide text-ink-soft">{children}</h3>;
 }
 
-/** Tanker section: compartment table, filling order and discharge order per stop. */
-function TankReport({ plan, ve }: { plan: Plan; ve: VehicleEval }) {
+/** Bulk section (tanker or dump truck): compartment table with the legal maximum, loading order and discharge / tipping order per stop. */
+function BulkReport({ plan, ve }: { plan: Plan; ve: VehicleEval }) {
   const sys = plan.settings.units;
   const v = ve.vehicle;
+  const tipper = v.bulk?.kind === 'tipper';
+  const state = bulkState(v);
   const evaluation = evaluatePlan(plan);
-  const rows = compartmentRows(plan, evaluation.units, v);
+  const rows = compartmentRows(plan, evaluation.units, v, ve.points);
   const customers = new Map(plan.customers.map((c) => [c.id, c.name]));
   const stopsBySeq = new Map(plan.stops.map((s) => [s.sequence, s]));
   const filled = rows.filter((r) => r.fills.length > 0);
-  const bySeq = new Map<number, typeof rows>();
+  const bySeq = new Map<number, CompartmentRow[]>();
   for (const r of filled) for (const u of r.fills) bySeq.set(u.stopSeq, [...(bySeq.get(u.stopSeq) ?? []), { ...r, fills: [u] }]);
-  const fillText = (r: (typeof rows)[number]) => `${r.compartment.label} ${r.fills[0].spec.liquid?.name ?? r.fills[0].spec.name} ${formatCargoLitres(unitLitres(r.fills[0]), sys)}`;
+  const fillText = (r: CompartmentRow) =>
+    `${tipper ? '' : `${r.compartment.label} `}${r.fills[0].spec.material?.name ?? r.fills[0].spec.name} ${formatBulkVolume(unitLitres(r.fills[0]), unitState(r.fills[0]), sys)}`;
+  const cell = 'num px-2 py-1 text-right font-mono text-[10.5px]';
   return (
     <>
-      <H>Tank compartments</H>
+      <H>{bulkTitle(v)}</H>
       <table className="w-full text-[11px]">
         <thead>
           <tr className="text-left text-[10px] uppercase tracking-wide text-muted">
-            <th className="py-1 pr-2">Comp.</th>
+            <th className="py-1 pr-2">{tipper ? 'Body' : 'Comp.'}</th>
             <th className="px-2 py-1 text-right">Capacity</th>
-            <th className="px-2 py-1">Liquid</th>
-            <th className="px-2 py-1">UN / class</th>
+            <th className="px-2 py-1">Material</th>
+            {tipper ? <th className="px-2 py-1 text-right">Density</th> : <th className="px-2 py-1">UN / class</th>}
             <th className="px-2 py-1 text-right">Volume</th>
             <th className="px-2 py-1 text-right">Fill</th>
             <th className="px-2 py-1 text-right">Weight</th>
+            <th className="px-2 py-1 text-right">Legal max</th>
+            <th className="px-2 py-1">Binding limit</th>
             <th className="py-1 pl-2">Stop / customer</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((r) => {
             const u = r.fills[0];
+            const m = u?.spec.material;
             const stop = u ? stopsBySeq.get(u.stopSeq) : undefined;
+            const over = overload(r);
             return (
               <tr key={r.compartment.id} className="border-t border-line">
                 <td className="py-1 pr-2 font-mono font-semibold">{r.compartment.label}</td>
-                <td className="num px-2 py-1 text-right font-mono text-[10.5px]">{formatCargoLitres(r.compartment.capacityL, sys)}</td>
+                <td className={cell}>{formatBulkVolume(r.compartment.capacityL, m?.state ?? state, sys)}</td>
                 <td className="px-2 py-1">
                   {u ? (
                     <span className="flex items-center gap-1.5">
                       <ColorDot color={r.color} size={8} />
-                      {u.spec.liquid?.name ?? u.spec.name}
+                      {m?.name ?? u.spec.name}
                       {r.fills.length > 1 && <span className="text-bad"> +{r.fills.length - 1}</span>}
                     </span>
                   ) : (
                     <span className="text-muted">empty</span>
                   )}
                 </td>
-                <td className="px-2 py-1">{u?.spec.hazmat ? `${u.spec.hazmat.unNumber} · cl. ${u.spec.hazmat.hazClass}` : '–'}</td>
-                <td className="num px-2 py-1 text-right font-mono text-[10.5px]">{u ? formatCargoLitres(r.volumeL, sys) : '–'}</td>
-                <td className={`num px-2 py-1 text-right font-mono text-[10.5px] ${r.fill > r.maxFill + 1e-9 ? 'text-bad' : ''}`}>{u ? formatPercent(r.fill) : '–'}</td>
-                <td className="num px-2 py-1 text-right font-mono text-[10.5px]">{u ? formatWeight(r.kg, sys) : '–'}</td>
+                {tipper ? (
+                  <td className={cell}>{m ? formatMaterialDensity(m.densityKgPerL, m.state, sys) : '–'}</td>
+                ) : (
+                  <td className="px-2 py-1">{u?.spec.hazmat ? `${u.spec.hazmat.unNumber} · cl. ${u.spec.hazmat.hazClass}` : '–'}</td>
+                )}
+                <td className={`${cell} ${over.litres > 0 ? 'font-semibold text-bad' : ''}`}>{u ? formatBulkVolume(r.volumeL, m?.state ?? state, sys) : '–'}</td>
+                <td className={`${cell} ${r.fill > r.maxFill + 1e-9 ? 'text-bad' : ''}`}>{u ? formatPercent(r.fill) : '–'}</td>
+                <td className={`${cell} ${over.litres > 0 ? 'font-semibold text-bad' : ''}`}>{u ? formatWeight(r.kg, sys) : '–'}</td>
+                <td className={cell}>{r.legal && m ? formatBulkVolume(r.legal.litres, m.state, sys) : '–'}</td>
+                <td className="px-2 py-1">
+                  {r.legal ? lowerFirst(r.legal.limitedBy) : r.blockedBy ? <span className="text-warn">other cargo breaks the {lowerFirst(r.blockedBy)}</span> : '–'}
+                  {over.litres > 0 && (
+                    <span className="block font-semibold text-bad">
+                      overloaded by {formatBulkVolume(over.litres, m?.state ?? state, sys)} ({formatMass(over.kg, sys)})
+                    </span>
+                  )}
+                </td>
                 <td className="py-1 pl-2">{u ? `${u.stopSeq} · ${stop ? (customers.get(stop.customerId) ?? stop.name) : ''}` : '–'}</td>
               </tr>
             );
           })}
         </tbody>
       </table>
-      <H>Filling order</H>
+      <H>{tipper ? 'Loading' : 'Filling order'}</H>
       {filled.length === 0 ? (
-        <p className="text-[11.5px] text-muted">No fills on this tanker.</p>
+        <p className="text-[11.5px] text-muted">{tipper ? 'The body is empty.' : 'No fills on this tanker.'}</p>
       ) : (
         <p className="text-[11px] leading-relaxed">{filled.map(fillText).join(' → ')}</p>
       )}
-      <H>Discharge order</H>
+      <H>{tipper ? 'Tipping order' : 'Discharge order'}</H>
       {bySeq.size === 0 ? (
-        <p className="text-[11.5px] text-muted">Nothing to discharge.</p>
+        <p className="text-[11.5px] text-muted">{tipper ? 'Nothing to tip.' : 'Nothing to discharge.'}</p>
       ) : (
         <ol className="space-y-0.5 text-[11px]">
           {[...bySeq.entries()]
@@ -185,25 +210,31 @@ function VehicleReport({ plan, ve }: { plan: Plan; ve: VehicleEval }) {
       <div className="flex items-baseline gap-2 border-b-2 border-ink pb-1">
         <h2 className="flex-1 text-[15px] font-semibold">{v.name}</h2>
         <span className="num text-[11px] text-muted">
-          {v.tank ? `${formatCargoLitres(tankCapacityL(v), sys)} in ${v.tank.compartments.length} compartments` : formatDims(v.cargo, sys, { big: true })} · payload {formatMass(v.payloadKg, sys)} · GVW/GCW{' '}
+          {v.bulk ? bulkSummary(v, sys) : formatDims(v.cargo, sys, { big: true })} · payload {formatMass(v.payloadKg, sys)} · GVW/GCW{' '}
           {formatMass(v.grossLimitKg, sys)}
         </span>
       </div>
       <div className="mt-2 grid grid-cols-4 gap-3 text-[11.5px]">
         <MetaItem label="Cargo weight" value={`${formatMass(ve.axle.cargoKg, sys)} (${formatPercent(ve.fill.weight)} of payload)`} />
-        {v.tank ? (
-          <MetaItem label="Fills · volume" value={`${ve.fill.units} fills · ${litrePair(ve.fill.placedVolume * 1000, ve.fill.usableVolume * 1000, sys)} (${formatPercent(ve.fill.volume)})`} />
+        {v.bulk ? (
+          <MetaItem
+            label="Fills · volume"
+            value={`${countLabel(ve.fill.units, 'fill')} · ${volumePair(ve.fill.placedVolume * 1000, ve.fill.usableVolume * 1000, bulkState(v), sys)} (${formatPercent(ve.fill.volume)})`}
+          />
         ) : (
-          <MetaItem label="Units · volume" value={`${ve.fill.units} units · ${formatPercent(ve.fill.volume)}`} />
+          <MetaItem label="Units · volume" value={`${countLabel(ve.fill.units, 'unit')} · ${formatPercent(ve.fill.volume)}`} />
         )}
         <MetaItem label="Remaining capacity" value={ve.remaining.kg > 0 ? `${formatMass(ve.remaining.kg, sys)} (${lowerFirst(ve.remaining.limitedBy)})` : `none: ${lowerFirst(ve.remaining.limitedBy)}`} />
-        <MetaItem label="Cargo COG" value={ve.axle.cog ? `${formatLength(ve.axle.cog.x, sys, { big: true })} from ${v.tank ? 'tank front' : 'front'}, ${formatLength(ve.axle.cog.z, sys, { big: true })} high` : 'empty'} />
+        <MetaItem
+          label="Cargo COG"
+          value={ve.axle.cog ? `${formatLength(ve.axle.cog.x, sys, { big: true })} from ${v.bulk ? frontLabel(v) : 'front'}, ${formatLength(ve.axle.cog.z, sys, { big: true })} high` : 'empty'}
+        />
       </div>
 
       <div className="report-diagrams">
-        {v.tank ? (
+        {v.bulk ? (
           <>
-            <H>Tank compartments (side view)</H>
+            <H>{v.bulk.kind === 'tipper' ? 'Dump body (side view)' : 'Tank compartments (side view)'}</H>
             <PlanDiagram plan={plan} vehicleId={v.id} mode="side" width={DIAGRAM_WIDTH} />
             <H>Top view</H>
             <PlanDiagram plan={plan} vehicleId={v.id} mode="top" width={DIAGRAM_WIDTH} />
@@ -221,8 +252,8 @@ function VehicleReport({ plan, ve }: { plan: Plan; ve: VehicleEval }) {
         </div>
       </div>
 
-      {v.tank ? (
-        <TankReport plan={plan} ve={ve} />
+      {v.bulk ? (
+        <BulkReport plan={plan} ve={ve} />
       ) : (
         <>
           <H>Loading instructions (forklift order)</H>
@@ -360,7 +391,7 @@ export function ReportView({ plan }: { plan: Plan }) {
               <th className="px-1.5 py-1">Item</th>
               <th className="px-1.5 py-1">SKU</th>
               <th className="px-1.5 py-1 text-right">Qty</th>
-              <th className="px-1.5 py-1">{lines.some((l) => isBulkLiquid(l.spec)) ? 'Dimensions / volume' : 'Dimensions'}</th>
+              <th className="px-1.5 py-1">{lines.some((l) => isBulk(l.spec)) ? 'Dimensions / volume' : 'Dimensions'}</th>
               <th className="px-1.5 py-1 text-right">Weight / unit</th>
               <th className="px-1.5 py-1">Handling</th>
               <th className="py-1 pl-1.5">Placed</th>
@@ -371,7 +402,7 @@ export function ReportView({ plan }: { plan: Plan }) {
               const stop = stops.get(l.stopId);
               const units = evaluation.units.filter((u) => u.lineId === l.id);
               const placed = units.filter((u) => plan.placements[u.id]);
-              const bulk = isBulkLiquid(l.spec);
+              const bulk = isBulk(l.spec);
               const where = [
                 ...new Set(
                   placed.map((u) => {
@@ -385,7 +416,7 @@ export function ReportView({ plan }: { plan: Plan }) {
               const handling = [
                 l.spec.temp !== 'ambient' ? TEMP_LABELS[l.spec.temp] : '',
                 l.spec.hazmat ? `${l.spec.hazmat.unNumber} cl. ${l.spec.hazmat.hazClass}` : '',
-                l.spec.liquid ? formatLiquidDensity(l.spec.liquid.densityKgPerL, sys) : '',
+                l.spec.material ? formatMaterialDensity(l.spec.material.densityKgPerL, l.spec.material.state, sys) : '',
                 l.spec.fragile ? 'fragile' : '',
                 bulk ? 'bulk' : l.spec.stackable ? `stack ≤ ${l.spec.maxStackLayers}` : 'no stack',
                 l.priority === 'urgent' ? 'urgent' : '',
@@ -401,7 +432,7 @@ export function ReportView({ plan }: { plan: Plan }) {
                   </td>
                   <td className="whitespace-nowrap px-1.5 py-1 font-mono">{l.spec.sku}</td>
                   <td className="num px-1.5 py-1 text-right">{l.quantity}</td>
-                  <td className="num whitespace-nowrap px-1.5 py-1">{bulk ? formatCargoLitres(l.spec.liquid?.volumeL ?? 0, sys) : formatDims(l.spec.dims, sys)}</td>
+                  <td className="num whitespace-nowrap px-1.5 py-1">{bulk ? formatBulkVolume(l.spec.material?.volumeL ?? 0, unitState(l), sys) : formatDims(l.spec.dims, sys)}</td>
                   <td className="num px-1.5 py-1 text-right">{formatWeight(l.spec.weightKg, sys)}</td>
                   <td className="px-1.5 py-1">{handling.join(', ')}</td>
                   <td className={`py-1 pl-1.5 ${placed.length < units.length ? 'text-bad' : ''}`}>

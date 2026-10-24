@@ -1,10 +1,10 @@
-import { bulkCog, isBulkLiquid } from '../domain/geometry';
+import { bulkCog, isBulk } from '../domain/geometry';
 import type { CargoUnit, Id, Placement, Plan, Vehicle } from '../domain/types';
 import { computeStages, loadShares, type StagePoint } from '../physics';
 import { Arrangement } from '../rules/arrangement';
 import { planIndex, vehicleArrangement } from '../rules/context';
 import { searchPlacement } from '../rules/placement';
-import { fillsOf, stageExcessKg, surges, worstUtilisation } from '../rules/tank';
+import { fillsOf, stageExcessKg, surges, worstUtilisation } from '../rules/bulk';
 import { validateMove } from '../rules/validateMove';
 import { usableOrientations } from './construct';
 
@@ -22,8 +22,8 @@ export function findPlacementFor(plan: Plan, unitId: Id, vehicleId: Id): Placeme
   const unit = units.get(unitId);
   const v = vehicles.get(vehicleId);
   if (!unit || !v) return null;
-  if (isBulkLiquid(unit.spec)) return findCompartmentFor(plan, unit, v);
-  if (v.tank) return null;
+  if (isBulk(unit.spec)) return findCompartmentFor(plan, unit, v);
+  if (v.bulk) return null;
   const orients = usableOrientations(unit, v, plan);
   if (!orients.length) return null;
   const arr = Arrangement.build(v, plan.settings, vehicleArrangement(plan, v, unitId).solids);
@@ -61,7 +61,7 @@ export function findPlacementFor(plan: Plan, unitId: Id, vehicleId: Id): Placeme
  * axle excess over all stages, then the lowest worst axle utilisation. Null when none fits.
  */
 function findCompartmentFor(plan: Plan, unit: CargoUnit, v: Vehicle): Placement | null {
-  if (!v.tank) return null;
+  if (!v.bulk) return null;
   const { units, labels } = planIndex(plan);
   const others = fillsOf(v, plan.placements, units, labels).filter((f) => f.id !== unit.id);
   const base: StagePoint[] = others.map((f) => {
@@ -69,7 +69,7 @@ function findCompartmentFor(plan: Plan, unit: CargoUnit, v: Vehicle): Placement 
     return { id: f.id, x: g.x, y: g.y, z: g.z, kg: f.spec.weightKg, stopSeq: units.get(f.id)?.stopSeq ?? Number.MAX_SAFE_INTEGER };
   });
   let best: { p: Placement; key: [number, number, number] } | null = null;
-  for (const c of v.tank.compartments) {
+  for (const c of v.bulk.compartments) {
     if (others.some((f) => f.c.id === c.id)) continue;
     const p: Placement = { unitId: unit.id, vehicleId: v.id, compartmentId: c.id, pos: { x: c.fromX, y: 0, z: 0 }, orient: 0 };
     if (!validateMove(plan, p).ok) continue;

@@ -1,27 +1,39 @@
 import { memo, useLayoutEffect, useMemo, useRef } from 'react';
-import { MeshBasicMaterial, MeshStandardMaterial, Object3D, type InstancedMesh } from 'three';
+import { MeshBasicMaterial, MeshStandardMaterial, Object3D, type InstancedMesh, type Material } from 'three';
 import { TEMP_COLORS } from '../domain/colors';
 import type { TempClass, Vehicle } from '../domain/types';
 import { toThree } from './coords';
 import { LINE_MATERIALS, MATERIALS, UNIT_BOX, UNIT_PLANE, WHEEL_CYLINDER } from './materials';
 import { boxEdgePoints, CBox, CCyl, CLines, FloorRect } from './prims';
 import { floorLabelTexture } from './textures';
+import { CurtainSides, DropsideBed, Mudguards, WingSides } from './BodyStyles';
 import { TankModel } from './TankModel';
 import { vehicleLayout, type VehicleLayout } from './vehicleLayout';
 
 const TYRE_W = 0.3;
 
 /** Static vehicle model (primitives) around the cargo space; cargo floor at y = 0. */
-export const VehicleModel = memo(function VehicleModel({ vehicle }: { vehicle: Vehicle }) {
+export const VehicleModel = memo(function VehicleModel({ vehicle, wingsOpen = false }: { vehicle: Vehicle; wingsOpen?: boolean }) {
   const layout = useMemo(() => vehicleLayout(vehicle), [vehicle]);
+  const bulk = vehicle.kind === 'tanker' || vehicle.kind === 'tipper';
   return (
     <group>
       <Wheels vehicle={vehicle} layout={layout} />
       {layout.artic ? <Tractor vehicle={vehicle} layout={layout} /> : <RigidCab vehicle={vehicle} layout={layout} />}
       {layout.artic && <TrailerChassis vehicle={vehicle} />}
-      {vehicle.kind === 'tanker' ? <TankModel vehicle={vehicle} /> : vehicle.kind === 'flatbed' ? <FlatbedDeck vehicle={vehicle} /> : <CargoBody vehicle={vehicle} />}
-      {vehicle.kind !== 'tanker' && <ZoneFloor vehicle={vehicle} />}
-      {vehicle.kind !== 'tanker' && <Bays vehicle={vehicle} />}
+      {vehicle.kind === 'tanker' ? (
+        <TankModel vehicle={vehicle} />
+      ) : vehicle.kind === 'tipper' ? (
+        <Mudguards vehicle={vehicle} layout={layout} />
+      ) : vehicle.kind === 'flatbed' ? (
+        <FlatbedDeck vehicle={vehicle} />
+      ) : vehicle.body === 'dropside' ? (
+        <DropsideBed vehicle={vehicle} />
+      ) : (
+        <CargoBody vehicle={vehicle} wingsOpen={wingsOpen} />
+      )}
+      {!bulk && <ZoneFloor vehicle={vehicle} />}
+      {!bulk && <Bays vehicle={vehicle} />}
     </group>
   );
 });
@@ -128,20 +140,26 @@ function TrailerChassis({ vehicle }: { vehicle: Vehicle }) {
 }
 
 /** Enclosed cargo body: floor, translucent walls/roof, frame, open rear doors, reefer unit, ribs on containers. */
-function CargoBody({ vehicle }: { vehicle: Vehicle }) {
+function CargoBody({ vehicle, wingsOpen }: { vehicle: Vehicle; wingsOpen: boolean }) {
   const { l, w, h } = vehicle.cargo;
   const container = vehicle.kind === 'container';
-  const wallMat = container ? MATERIALS.containerWall : MATERIALS.wall;
+  const wallMat = container ? (vehicle.tempControlled ? MATERIALS.reeferContainerWall : MATERIALS.containerWall) : MATERIALS.wall;
+  const style = container ? 'box' : (vehicle.body ?? 'box');
   const edges = useMemo(() => boxEdgePoints([0, -0.04, -0.16], [l, w + 0.04, h + 0.06]), [l, w, h]);
   const doorW = w / 2;
   return (
     <group>
       <CBox min={[0, 0, -0.16]} max={[l, w, 0]} material={MATERIALS.floor} />
-      <CBox min={[0, -0.04, 0]} max={[l, 0, h]} material={wallMat} />
-      <CBox min={[0, w, 0]} max={[l, w + 0.04, h]} material={wallMat} />
+      {style === 'box' && (
+        <>
+          <CBox min={[0, -0.04, 0]} max={[l, 0, h]} material={wallMat} />
+          <CBox min={[0, w, 0]} max={[l, w + 0.04, h]} material={wallMat} />
+        </>
+      )}
+      {style === 'curtain' && <CurtainSides vehicle={vehicle} />}
       <CBox min={[-0.05, -0.04, 0]} max={[0, w + 0.04, h]} material={wallMat} />
-      <CBox min={[0, -0.04, h]} max={[l, w + 0.04, h + 0.06]} material={MATERIALS.roof} />
-      <CLines points={edges} />
+      {style === 'wingbox' ? <WingSides vehicle={vehicle} open={wingsOpen} /> : <CBox min={[0, -0.04, h]} max={[l, w + 0.04, h + 0.06]} material={MATERIALS.roof} />}
+      {style !== 'wingbox' && <CLines points={edges} />}
       {/* rear door frame */}
       <CBox min={[l - 0.06, -0.07, -0.16]} max={[l + 0.02, 0.04, h + 0.06]} material={MATERIALS.doorFrame} />
       <CBox min={[l - 0.06, w - 0.04, -0.16]} max={[l + 0.02, w + 0.07, h + 0.06]} material={MATERIALS.doorFrame} />
@@ -162,14 +180,14 @@ function CargoBody({ vehicle }: { vehicle: Vehicle }) {
           <CBox min={[-0.47, 0.38, h * 0.5]} max={[-0.44, w - 0.38, h - 0.2]} material={MATERIALS.grille} />
         </group>
       )}
-      {container && <ContainerRibs vehicle={vehicle} />}
+      {container && <ContainerRibs vehicle={vehicle} material={wallMat} />}
     </group>
   );
 }
 
 const RIB_PITCH = 0.28;
 
-function ContainerRibs({ vehicle }: { vehicle: Vehicle }) {
+function ContainerRibs({ vehicle, material }: { vehicle: Vehicle; material: Material }) {
   const ref = useRef<InstancedMesh>(null);
   const { l, w, h } = vehicle.cargo;
   const perSide = Math.max(1, Math.floor(l / RIB_PITCH));
@@ -201,7 +219,7 @@ function ContainerRibs({ vehicle }: { vehicle: Vehicle }) {
     mesh.instanceMatrix.needsUpdate = true;
     mesh.computeBoundingSphere();
   }, [l, w, h, perSide]);
-  return <instancedMesh ref={ref} args={[UNIT_BOX, MATERIALS.containerWall, count]} />;
+  return <instancedMesh ref={ref} args={[UNIT_BOX, material, count]} />;
 }
 
 function FlatbedDeck({ vehicle }: { vehicle: Vehicle }) {
