@@ -1,5 +1,6 @@
 import { useId, useState, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from 'react';
-import { fromKg, fromMetres, parseNumber, toKg, toMetres, type LengthUnit, type WeightUnit, LENGTH_UNITS, WEIGHT_UNITS } from '../../domain/units';
+import type { UnitSystem } from '../../domain/types';
+import { fromKg, fromMetres, kgToLb, L_PER_US_GAL, lbToKg, parseNumber, toKg, toMetres, type LengthUnit, type WeightUnit, LENGTH_UNITS, WEIGHT_UNITS } from '../../domain/units';
 
 export const inputClass =
   'h-9 w-full rounded-lg border border-line bg-card px-2.5 text-sm text-ink placeholder:text-muted focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25 disabled:bg-canvas disabled:text-muted';
@@ -180,4 +181,27 @@ export function WeightInput({
       </div>
     </div>
   );
+}
+
+/** Liquid volume input: value in litres, typed in L (metric) or US gallons (imperial). */
+export function LitresInput({
+  litres,
+  onChange,
+  sys,
+  min = 0,
+  ...rest
+}: { litres: number; onChange: (litres: number) => void; sys: UnitSystem; min?: number } & Omit<NumberInputProps, 'value' | 'onChange' | 'suffix' | 'min'>) {
+  const perUnit = sys === 'metric' ? 1 : L_PER_US_GAL;
+  return <NumberInput value={litres / perUnit} onChange={(n) => onChange(n * perUnit)} digits={sys === 'metric' ? 1 : 2} min={min / perUnit} suffix={sys === 'metric' ? 'L' : 'gal'} {...rest} />;
+}
+
+/** Liquid density input: value in kg/L, typed in kg/L (metric) or lb/gal (imperial, US gallons). */
+export function LiquidDensityInput({
+  kgPerL,
+  onChange,
+  sys,
+  ...rest
+}: { kgPerL: number; onChange: (kgPerL: number) => void; sys: UnitSystem } & Omit<NumberInputProps, 'value' | 'onChange' | 'suffix'>) {
+  if (sys === 'metric') return <NumberInput value={kgPerL} onChange={onChange} digits={3} suffix="kg/L" {...rest} />;
+  return <NumberInput value={kgToLb(kgPerL) * L_PER_US_GAL} onChange={(n) => onChange(lbToKg(n) / L_PER_US_GAL)} digits={2} suffix="lb/gal" {...rest} />;
 }

@@ -459,9 +459,18 @@ export const useStore = create<StoreState>()((set, get) => {
       }),
     assignCompartment: (unitId, vehicleId, compartmentId) =>
       commit('Fill compartment', (d) => {
-        const c = d.vehicles.find((v) => v.id === vehicleId)?.tank?.compartments.find((x) => x.id === compartmentId);
-        if (!c) return;
-        d.placements[unitId] = { unitId, vehicleId, compartmentId, pos: { x: c.fromX, y: 0, z: 0 }, orient: 0 };
+        const tank = d.vehicles.find((v) => v.id === vehicleId)?.tank;
+        const c = tank?.compartments.find((x) => x.id === compartmentId);
+        if (!tank || !c) return;
+        const prev = d.placements[unitId];
+        // A fill already in the target swaps into the moved fill's old compartment on this tanker, else it is unloaded.
+        const occupant = Object.values(d.placements).find((p) => p.unitId !== unitId && p.vehicleId === vehicleId && p.compartmentId === compartmentId);
+        if (occupant) {
+          const back = prev?.vehicleId === vehicleId ? tank.compartments.find((x) => x.id === prev.compartmentId) : undefined;
+          if (back) d.placements[occupant.unitId] = { ...occupant, compartmentId: back.id, pos: { x: back.fromX, y: 0, z: 0 } };
+          else delete d.placements[occupant.unitId];
+        }
+        d.placements[unitId] = { unitId, vehicleId, compartmentId, pos: { x: c.fromX, y: 0, z: 0 }, orient: 0, ...(prev?.pinned ? { pinned: true } : {}) };
       }),
     togglePin: (unitId) =>
       commit('Pin unit', (d) => {
