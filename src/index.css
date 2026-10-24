@@ -43,3 +43,48 @@ body {
 ::selection {
   background: rgb(245 158 11 / 0.25);
 }
+
+/* Print-only report (ReportView's PrintHost). Hidden on screen; when printing, only it is shown. */
+.print-only {
+  display: none;
+}
+
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 12mm;
+  }
+
+  html,
+  body {
+    height: auto;
+    background: #fff;
+  }
+
+  #root {
+    display: none !important;
+  }
+
+  .print-only {
+    display: block;
+  }
+
+  .report {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .report .report-vehicle + .report-vehicle {
+    break-before: page;
+  }
+
+  .report .report-diagrams,
+  .report table tr,
+  .report li {
+    break-inside: avoid;
+  }
+
+  .report h3 {
+    break-after: avoid;
+  }
+}

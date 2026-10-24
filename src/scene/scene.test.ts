@@ -1,0 +1,208 @@
+import { Box3, Matrix4, Vector3 } from 'three';
+import { describe, expect, it } from 'vitest';
+import { createSeedPlan, makeSpec } from '../data/seed';
+import { BUILT_IN_TEMPLATES } from '../data/templates';
+import { allowedOrientations, ORIENTATION_AXES, orientedSize, placementBox } from '../domain/geometry';
+import { createVehicle } from '../domain/presets';
+import type { ItemSpec, Orientation, Plan } from '../domain/types';
+import { threeToCargo, toThree, vecToThree } from './coords';
+import { dragCandidate, dragContext } from './dragMath';
+import { goodsArchetype } from './goods/archetype';
+import { MAX_PARTS } from './goods/builder';
+import { buildGoodsModel, disposeGoodsModel } from './goods/model';
+import { goodsInstanceMatrix, orientationRotation } from './goods/orientation';
+import { axleLoadText } from './sceneFormat';
+import { dockLayout } from './staging';
+import { unitParts } from './unitParts';
+import { vehicleLayout } from './vehicleLayout';
+
+const MM = 0.001;
+
+function expectBoxWithin(inner: Box3, outer: Box3, tol = MM) {
+  expect(inner.min.x).toBeGreaterThanOrEqual(outer.min.x - tol);
+  expect(inner.min.y).toBeGreaterThanOrEqual(outer.min.y - tol);
+  expect(inner.min.z).toBeGreaterThanOrEqual(outer.min.z - tol);
+  expect(inner.max.x).toBeLessThanOrEqual(outer.max.x + tol);
+  expect(inner.max.y).toBeLessThanOrEqual(outer.max.y + tol);
+  expect(inner.max.z).toBeLessThanOrEqual(outer.max.z + tol);
+}
+
+/** Placement box of a unit in three.js coordinates. */
+function threeBox(spec: ItemSpec, orient: Orientation, pos: { x: number; y: number; z: number }): Box3 {
+  const b = placementBox({ pos, orient }, spec);
+  return new Box3().setFromPoints([vecToThree(b.min), vecToThree(b.max)]);
+}
+
+describe('goods generator', () => {
+  const specs: ItemSpec[] = [...BUILT_IN_TEMPLATES.map((t) => t.spec), ...createSeedPlan().lines.map((l) => l.spec)];
+
+  it.each(specs.map((s) => [s.name, s] as const))('%s fits its L×W×H box in every allowed orientation', (_name, spec) => {
+    const model = buildGoodsModel(spec);
+    expect(model.parts).toBeLessThanOrEqual(MAX_PARTS);
+    const local = new Box3();
+    for (const g of [model.solid, model.tags, model.film]) {
+      if (!g) continue;
+      g.computeBoundingBox();
+      local.union(g.boundingBox!);
+    }
+    const { l, w, h } = spec.dims;
+    expectBoxWithin(local, new Box3(new Vector3(0, 0, -w), new Vector3(l, h, 0)));
+    const pos = { x: 2.5, y: 0.4, z: 0.3 };
+    for (const orient of allowedOrientations(spec)) {
+      const placed = local.clone().applyMatrix4(goodsInstanceMatrix(orient, spec.dims, pos, new Matrix4()));
+      expectBoxWithin(placed, threeBox(spec, orient, pos));
+    }
+    disposeGoodsModel(model);
+  });
+
+  it('picks archetypes from packaging, shape and keywords', () => {
+    const byName = new Map(specs.map((s) => [s.name, s]));
+    const pick = (name: string) => goodsArchetype(byName.get(name)!);
+    expect(pick('Apparel cartons')).toBe('pallet-cartons');
+    expect(pick('Frozen fish')).toBe('frozen-cartons');
+    expect(pick('Chilled dairy')).toBe('dairy-crates');
+    expect(pick('Fresh produce')).toBe('produce-crates');
+    expect(pick('Beverages, half pallet')).toBe('beverages');
+    expect(pick('Industrial paint')).toBe('pails');
+    expect(pick('Pool chlorine (calcium hypochlorite)')).toBe('pails');
+    expect(pick('Lithium-ion batteries')).toBe('batteries');
+    expect(pick('Flat-screen TVs 65"')).toBe('tv-boxes');
+    expect(pick('Press die set, crated')).toBe('wooden-crate');
+    expect(pick('Gearbox housing, crated')).toBe('wooden-crate');
+    expect(pick('Glass display panels, crated')).toBe('glass-crate');
+    expect(pick('CNC spindle unit on skid')).toBe('machine');
+    expect(pick('Steel profiles 4 m')).toBe('steel-bundle');
+    expect(pick('Lubricating oil drum 200 L')).toBe('drum');
+    expect(pick('Paper roll')).toBe('paper-roll');
+    expect(pick('Cable reel')).toBe('cable-reel');
+    expect(pick('IBC tote 1000 L')).toBe('ibc');
+    expect(pick('Bricks on industrial pallet')).toBe('bricks');
+    expect(pick('Flat-pack furniture cartons')).toBe('furniture');
+    expect(goodsArchetype(makeSpec({ name: 'Spare parts', packaging: 'carton', dims: { l: 0.6, w: 0.4, h: 0.4 }, weightKg: 12 }))).toBe('carton');
+    expect(goodsArchetype(makeSpec({ name: 'Thing', dims: { l: 1, w: 1, h: 1 }, weightKg: 100 }))).toBe('custom');
+  });
+});
+
+describe('goods orientation matrices', () => {
+  const dims = { l: 1.2, w: 0.8, h: 0.5 };
+  it.each(ORIENTATION_AXES.map((_, i) => i as Orientation))('orientation %i is a proper rotation filling the placement box', (orient) => {
+    expect(orientationRotation(orient).determinant()).toBeCloseTo(1, 9);
+    const pos = { x: 1, y: 2, z: 0.25 };
+    const m = goodsInstanceMatrix(orient, dims, pos, new Matrix4());
+    expect(m.determinant()).toBeCloseTo(1, 9);
+    const local = new Box3(new Vector3(0, 0, -dims.w), new Vector3(dims.l, dims.h, 0));
+    const placed = local.clone().applyMatrix4(m);
+    const s = orientedSize(dims, orient);
+    const expected = new Box3().setFromPoints([vecToThree(pos), vecToThree({ x: pos.x + s.x, y: pos.y + s.y, z: pos.z + s.z })]);
+    expect(placed.min.distanceTo(expected.min)).toBeLessThan(1e-9);
+    expect(placed.max.distanceTo(expected.max)).toBeLessThan(1e-9);
+  });
+});
+
+describe('coords', () => {
+  it('maps cargo x/y/z to three X / Y-up / -Z and back', () => {
+    expect(toThree(1, 2, 3)).toEqual([1, 3, -2]);
+    const v = vecToThree({ x: 4, y: 0.5, z: 1.2 }, new Vector3());
+    expect(v.toArray()).toEqual([4, 1.2, -0.5]);
+    expect(threeToCargo(v)).toEqual({ x: 4, y: 0.5, z: 1.2 });
+  });
+});
+
+function emptyPlan(): Plan {
+  const plan = createSeedPlan();
+  return { ...plan, placements: {} };
+}
+
+describe('dragCandidate', () => {
+  const plan = createSeedPlan();
+  const v = plan.vehicles[0];
+  const size = { x: 1.2, y: 0.8, z: 1.0 };
+
+  it('snaps to the grid and clamps into the cargo space', () => {
+    const ctx = dragContext(emptyPlan(), v.id, 'x#0')!;
+    const pos = dragCandidate(ctx, { x: 5.023 + 0.6, y: 0.912 + 0.4 }, size);
+    expect(pos.x).toBeCloseTo(5.0, 6);
+    expect(pos.y).toBeCloseTo(0.9, 6);
+    expect(pos.z).toBe(0);
+    const clamped = dragCandidate(ctx, { x: 100, y: -5 }, size);
+    expect(clamped.x).toBeCloseTo(v.cargo.l - size.x, 6);
+    expect(clamped.y).toBe(0);
+  });
+
+  it('snaps to neighbour edges within 8 cm', () => {
+    const base = emptyPlan();
+    const spec = makeSpec({ name: 'Crate', dims: { l: 1.2, w: 0.8, h: 1 }, weightKg: 100, stackable: true, maxLoadOnTopKg: 1000, maxStackLayers: 3 });
+    const p: Plan = { ...base, lines: [{ id: 'L', spec, quantity: 2, stopId: base.stops[0].id, priority: 'normal' }], placements: { 'L#0': { unitId: 'L#0', vehicleId: v.id, pos: { x: 2, y: 0, z: 0 }, orient: 0 } } };
+    const ctx = dragContext(p, v.id, 'L#1')!;
+    // Raw min x = 3.26 lies 6 cm behind the neighbour's rear face (3.2): snaps flush against it.
+    const pos = dragCandidate(ctx, { x: 3.26 + 0.6, y: 0.4 }, size);
+    expect(pos.x).toBeCloseTo(3.2, 6);
+  });
+
+  it('stacks onto the highest unit under the footprint', () => {
+    const base = emptyPlan();
+    const spec = makeSpec({ name: 'Crate', dims: { l: 1.2, w: 0.8, h: 1 }, weightKg: 100, stackable: true, maxLoadOnTopKg: 1000, maxStackLayers: 3 });
+    const p: Plan = { ...base, lines: [{ id: 'L', spec, quantity: 2, stopId: base.stops[0].id, priority: 'normal' }], placements: { 'L#0': { unitId: 'L#0', vehicleId: v.id, pos: { x: 2, y: 0, z: 0 }, orient: 0 } } };
+    const ctx = dragContext(p, v.id, 'L#1')!;
+    const pos = dragCandidate(ctx, { x: 2.6, y: 0.4 }, size);
+    expect(pos).toEqual({ x: 2, y: 0, z: 1 });
+  });
+});
+
+describe('unitParts', () => {
+  it('splits palletised units into a pallet base and inset goods', () => {
+    const spec = makeSpec({ name: 'Pallet', dims: { l: 1.2, w: 0.8, h: 1.6 }, weightKg: 300, palletHeight: 0.144 });
+    const parts = unitParts(spec, 0, placementBox({ pos: { x: 0, y: 0, z: 0 }, orient: 0 }, spec));
+    expect(parts.map((p) => p.kind)).toEqual(['pallet', 'box']);
+    expect(parts[0].box.max.z).toBeCloseTo(0.144);
+    expect(parts[1].box.min.z).toBeCloseTo(0.144);
+    expect(parts[1].box.min.x).toBeGreaterThan(0);
+  });
+
+  it('runs lying cylinders along the item length', () => {
+    const spec = makeSpec({ name: 'Roll', shape: 'cylinder-lying', dims: { l: 2, w: 0.6, h: 0.6 }, weightKg: 300, rotation: 'any', keepUpright: false });
+    expect(unitParts(spec, 0, placementBox({ pos: { x: 0, y: 0, z: 0 }, orient: 0 }, spec))[0].axis).toBe(0);
+    expect(unitParts(spec, 1, placementBox({ pos: { x: 0, y: 0, z: 0 }, orient: 1 }, spec))[0].axis).toBe(1);
+  });
+});
+
+describe('vehicleLayout', () => {
+  it('places semi-trailer tractor axles through the coupling', () => {
+    const v = createVehicle('us-reefer-53');
+    const layout = vehicleLayout(v);
+    if (v.statics.type !== 'artic') throw new Error('expected artic');
+    const s = v.statics;
+    expect(layout.groupX[0]).toBeCloseTo(s.kingpinX - s.fifthWheelX);
+    expect(layout.groupX[1]).toBeCloseTo(s.kingpinX - (s.fifthWheelX - s.drive.x));
+    expect(layout.groupX[2]).toBeCloseTo(s.trailerAxle.x);
+    const trailerAxles = layout.axles.filter((a) => a.groupIndex === 2).map((a) => a.x);
+    expect(trailerAxles[0]).toBeCloseTo(s.trailerAxle.x - s.trailerAxle.spread / 2);
+    expect(trailerAxles[1]).toBeCloseTo(s.trailerAxle.x + s.trailerAxle.spread / 2);
+    expect(layout.cab.toX).toBeLessThan(0);
+  });
+});
+
+describe('dockLayout', () => {
+  it('gives every unit a slot in its stop lane behind the dock face, lanes ordered by stop', () => {
+    const plan = createSeedPlan();
+    const v = plan.vehicles[0];
+    const units = Object.values(plan.placements).map((p) => {
+      const line = plan.lines.find((l) => p.unitId.startsWith(`${l.id}#`))!;
+      const stop = plan.stops.find((s) => s.id === line.stopId)!;
+      const b = placementBox(p, line.spec);
+      return { id: p.unitId, stopId: stop.id, stopSeq: stop.sequence, size: { x: b.max.x - b.min.x, y: b.max.y - b.min.y, z: b.max.z - b.min.z } };
+    });
+    const dock = dockLayout(v, units);
+    expect(dock.slots.size).toBe(units.length);
+    expect(dock.lanes.map((l) => l.stopSeq)).toEqual([1, 2, 3, 4, 5]);
+    for (const slot of dock.slots.values()) expect(slot.min.x).toBeGreaterThan(dock.wallX);
+    for (let i = 1; i < dock.lanes.length; i++) expect(dock.lanes[i].minY).toBeGreaterThan(dock.lanes[i - 1].maxY);
+  });
+});
+
+describe('axleLoadText', () => {
+  it('formats load / limit in the plan unit system', () => {
+    expect(axleLoadText(15_400, 15_422, 'metric')).toBe('15.4 / 15.4 t');
+    expect(axleLoadText(15_400, 15_422.2, 'imperial')).toBe('33,951 / 34,000 lb');
+  });
+});

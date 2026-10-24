@@ -54,7 +54,7 @@ export function Toggle({ checked, onChange, label, hint, disabled }: { checked: 
         onClick={() => onChange(!checked)}
         className={`relative mt-0.5 h-5 w-9 shrink-0 rounded-full transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${checked ? 'bg-accent' : 'bg-line-strong'}`}
       >
-        <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-4' : 'translate-x-0.5'}`} />
+        <span className={`absolute left-0 top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-4' : 'translate-x-0.5'}`} />
       </button>
       <label htmlFor={id} className="flex cursor-pointer flex-col text-xs">
         <span className="font-medium text-ink">{label}</span>
@@ -154,7 +154,9 @@ export function LengthInput({
   return (
     <div className="flex gap-1">
       <div className="min-w-0 flex-1">{input}</div>
-      <Select value={unit} onChange={onUnitChange} options={LENGTH_UNITS.map((u) => ({ value: u, label: u }))} className="w-16 shrink-0" aria-label="Length unit" />
+      <div className="w-[4.5rem] shrink-0">
+        <Select value={unit} onChange={onUnitChange} options={LENGTH_UNITS.map((u) => ({ value: u, label: u }))} aria-label="Length unit" />
+      </div>
     </div>
   );
 }
@@ -173,7 +175,9 @@ export function WeightInput({
   return (
     <div className="flex gap-1">
       <div className="min-w-0 flex-1">{input}</div>
-      <Select value={unit} onChange={onUnitChange} options={WEIGHT_UNITS.map((u) => ({ value: u, label: u }))} className="w-16 shrink-0" aria-label="Weight unit" />
+      <div className="w-[4.5rem] shrink-0">
+        <Select value={unit} onChange={onUnitChange} options={WEIGHT_UNITS.map((u) => ({ value: u, label: u }))} aria-label="Weight unit" />
+      </div>
     </div>
   );
 }

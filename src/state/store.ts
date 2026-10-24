@@ -502,7 +502,11 @@ export const useStore = create<StoreState>()((set, get) => {
         d.vehicles = structuredClone(preview.vehicles);
       });
       setUi({ optimise: { running: false, progress: 0 } });
-      get().toast(`Optimised: ${diff.outcome.moved} unit${diff.outcome.moved === 1 ? '' : 's'} moved`, 'success');
+      const placed = Object.keys(preview.placements).filter((id) => !diff.base.placements[id]).length;
+      const moved = diff.outcome.moved;
+      const parts = [`${moved} unit${moved === 1 ? '' : 's'} moved`];
+      if (placed) parts.unshift(`${placed} placed`);
+      get().toast(`Optimised: ${parts.join(', ')}`, 'success');
     },
     discardOptimise: () => setUi({ optimise: { running: false, progress: 0 } }),
 

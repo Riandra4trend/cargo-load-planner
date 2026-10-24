@@ -27,9 +27,17 @@ export const itemLengthUnit = (sys: UnitSystem): LengthUnit => (sys === 'metric'
 export const bigLengthUnit = (sys: UnitSystem): LengthUnit => (sys === 'metric' ? 'm' : 'ft');
 export const weightUnit = (sys: UnitSystem): WeightUnit => (sys === 'metric' ? 'kg' : 'lb');
 
+/** One formatter per digit count: toLocaleString builds a new formatter on every call, which dominates large tables and rule messages. */
+const numberFormats = new Map<number, Intl.NumberFormat>();
+
 export function formatNumber(n: number, digits = 0): string {
   if (!Number.isFinite(n)) return '-';
-  return n.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  let format = numberFormats.get(digits);
+  if (!format) {
+    format = new Intl.NumberFormat('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+    numberFormats.set(digits, format);
+  }
+  return format.format(n);
 }
 
 const LENGTH_DIGITS: Record<LengthUnit, number> = { mm: 0, cm: 0, m: 2, in: 1, ft: 1 };
