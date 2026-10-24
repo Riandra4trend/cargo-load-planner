@@ -4,13 +4,15 @@
  * heavy-item placement, front gaps, zone sizes and (stable mode) released units. Pure and
  * synchronous; deterministic for a given seed and iteration count.
  */
-import { allowedOrientations, orientedSize } from '../domain/geometry';
-import type { Id, Placement, TempZone } from '../domain/types';
+import { allowedOrientations, expandUnits, isBulkLiquid, orientedSize } from '../domain/geometry';
+import type { Id, Placement, TempZone, Vehicle } from '../domain/types';
+import { planIndex } from '../rules/context';
 import { hardViolations } from '../rules/checkPlan';
 import { hazmatIssue, usableHeight } from '../rules/geometry';
 import { withPacking } from './apply';
 import { buildProblem, capacityKg, decode, initialGenome, samePlacement, tightenZones, type Genome, type Layout, type Problem, type SortKey } from './construct';
 import { mulberry32 } from './random';
+import { assignTanks } from './tanks';
 import { isClean, scoreLayout, windowCentre, type Score } from './score';
 import type { OptimiseRequest, OptimiseResult } from './types';
 
@@ -35,7 +37,68 @@ function cloneGenome(g: Genome): Genome {
   };
 }
 
+/**
+ * Optimises the requested vehicles: bulk liquid fills are assigned to tanker compartments
+ * (packing/tanks.ts), floor units are packed into the other vehicles. Tankers carry only bulk
+ * fills and bulk fills never go onto a floor.
+ */
 export function optimise(req: OptimiseRequest, onProgress?: (fraction: number) => void): OptimiseResult {
+  const t0 = performance.now();
+  const { plan } = req;
+  const { vehicles: byId } = planIndex(plan);
+  const involved = new Set(req.vehicleIds);
+  const vehicles = req.vehicleIds.map((id) => byId.get(id)).filter((v): v is Vehicle => !!v);
+  const tankers = vehicles.filter((v) => v.tank);
+  const floors = vehicles.filter((v) => !v.tank);
+  const requested = req.unitIds ? new Set(req.unitIds) : null;
+  const considered = expandUnits(plan).filter((u) => {
+    const p = plan.placements[u.id];
+    return requested ? requested.has(u.id) : !p || involved.has(p.vehicleId);
+  });
+  const movable = considered.filter((u) => !plan.placements[u.id]?.pinned);
+  const movableIds = new Set(movable.map((u) => u.id));
+  const bulk = movable.filter((u) => isBulkLiquid(u.spec));
+  const floorUnits = movable.filter((u) => !isBulkLiquid(u.spec));
+
+  const result: OptimiseResult = { placements: {}, zones: {}, sliders: {}, unplaced: [], moved: 0, score: 0, iterations: 0, ms: 0 };
+  if (tankers.length || bulk.length) {
+    const fixedIds = new Set(Object.values(plan.placements).flatMap((p) => (involved.has(p.vehicleId) && !movableIds.has(p.unitId) ? [p.unitId] : [])));
+    const tanks = assignTanks(plan, tankers, bulk, fixedIds, { keepExisting: req.keepExisting, maxIterations: req.maxIterations, deadline: t0 + req.timeBudgetMs });
+    Object.assign(result.placements, tanks.placements);
+    result.unplaced.push(...tanks.unplaced);
+    result.moved += tanks.moved;
+    result.score += tanks.score;
+    result.iterations += tanks.iterations;
+  }
+  if (floorUnits.length && floors.length) {
+    const boxes = packFloors(
+      { ...req, vehicleIds: floors.map((v) => v.id), unitIds: floorUnits.map((u) => u.id), timeBudgetMs: Math.max(0, req.timeBudgetMs - (performance.now() - t0)) },
+      onProgress,
+    );
+    Object.assign(result.placements, boxes.placements);
+    Object.assign(result.zones, boxes.zones);
+    Object.assign(result.sliders, boxes.sliders);
+    result.unplaced.push(...boxes.unplaced);
+    result.moved += boxes.moved;
+    result.score += boxes.score;
+    result.iterations += boxes.iterations;
+  } else {
+    for (const u of floorUnits) {
+      result.unplaced.push({ unitId: u.id, reason: tankers.length ? 'A tanker only carries bulk liquid' : 'No vehicle selected' });
+      if (plan.placements[u.id]) result.moved++;
+    }
+  }
+  // Everything else in the involved vehicles (pinned, or outside the request) stays as it is.
+  for (const p of Object.values(plan.placements)) {
+    if (involved.has(p.vehicleId) && !movableIds.has(p.unitId) && !result.placements[p.unitId]) result.placements[p.unitId] = p;
+  }
+  result.ms = performance.now() - t0;
+  onProgress?.(1);
+  return result;
+}
+
+/** Floor packing of `req.unitIds` (non-bulk units) into `req.vehicleIds` (vehicles without a tank). */
+function packFloors(req: OptimiseRequest, onProgress?: (fraction: number) => void): OptimiseResult {
   const t0 = performance.now();
   const budget = Math.max(0, req.timeBudgetMs);
   const deadline = t0 + budget;

@@ -1,10 +1,10 @@
 import { uid } from '../../domain/ids';
-import { createVehicle, sliderPositions, vehicleTareKg } from '../../domain/presets';
-import type { ArticStatics, AxleGroup, RigidStatics, TempClass, TempZone, UnitSystem, Vehicle } from '../../domain/types';
-import { formatLength, formatMass } from '../../domain/units';
+import { compartments, createVehicle, sliderPositions, vehicleTareKg } from '../../domain/presets';
+import type { ArticStatics, AxleGroup, RigidStatics, TankCompartment, TankSpec, TempClass, TempZone, UnitSystem, Vehicle, VehicleKind } from '../../domain/types';
+import { formatLength, formatLitres, formatMass } from '../../domain/units';
 import { curvePeak, loadDistributionCurve } from '../../physics';
 
-/** Pure helpers behind the vehicle editor: statics switching, temperature-zone editing and validation. */
+/** Pure helpers behind the vehicle editor: statics switching, temperature zones, tank compartments and validation. */
 
 const round3 = (x: number) => Math.round(x * 1000) / 1000;
 const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));
@@ -49,6 +49,123 @@ export function withStaticsType(v: Vehicle, type: 'rigid' | 'artic'): Vehicle {
     fuel: { ...template.fuel, reeferLPerHour: v.fuel.reeferLPerHour },
     statics,
   };
+}
+
+// --- tank compartments --------------------------------------------------------
+
+/** Share of the bounding box filled by an elliptical barrel cross-section. */
+const BARREL_SECTION = Math.PI / 4;
+/** New tanks hold this share of the barrel's geometric volume (walls, baffles, ullage). */
+const DEFAULT_TANK_SHARE = 0.9;
+const DEFAULT_COMPARTMENTS = 4;
+const MIN_COMPARTMENT = 0.3;
+const AUTO_LABEL = /^C\d+$/;
+
+/** Geometric volume of `length` metres of the vehicle's barrel (elliptical section inside cargo w × h), litres. */
+export function barrelLitres(v: Pick<Vehicle, 'cargo'>, length: number = v.cargo.l): number {
+  return length * v.cargo.w * v.cargo.h * BARREL_SECTION * 1000;
+}
+
+/** A new tank: equal compartments holding about 90 % of the barrel volume, rounded down to 100 L each. */
+export function defaultTank(v: Vehicle): TankSpec {
+  const each = Math.max(100, Math.floor((barrelLitres(v) * DEFAULT_TANK_SHARE) / DEFAULT_COMPARTMENTS / 100) * 100);
+  return {
+    compartments: compartments(v.cargo.l, Array.from({ length: DEFAULT_COMPARTMENTS }, () => each)),
+    baffled: false,
+    foodGrade: false,
+    insulated: false,
+    pressurised: false,
+  };
+}
+
+/** Changes the body type; becoming a tanker creates a default tank, leaving it removes the tank. */
+export function withKind(v: Vehicle, kind: VehicleKind): Vehicle {
+  if (kind === v.kind) return v;
+  if (kind === 'tanker') return { ...v, kind, tank: v.tank ?? defaultTank(v) };
+  const next = { ...v, kind };
+  delete next.tank;
+  return next;
+}
+
+/** Positions compartments along 0..L in proportion to their capacities (ids, labels and capacities kept). */
+export function layoutCompartments(list: TankCompartment[], L: number): TankCompartment[] {
+  const weights = list.map((c) => (c.capacityL > 0 ? c.capacityL : 0));
+  const laid = compartments(L, weights.some((w) => w > 0) ? weights : weights.map(() => 1));
+  return list.map((c, i) => ({ ...c, fromX: laid[i].fromX, toX: laid[i].toX }));
+}
+
+/** True when the compartments sit exactly where layoutCompartments would put them. */
+export function isAutoLayout(list: TankCompartment[], L: number): boolean {
+  const laid = layoutCompartments(list, L);
+  return list.every((c, i) => Math.abs(c.fromX - laid[i].fromX) < 0.001 && Math.abs(c.toX - laid[i].toX) < 0.001);
+}
+
+/** Renumbers C1..Cn front to rear unless the user has given custom labels. */
+function relabel(list: TankCompartment[]): TankCompartment[] {
+  return list.every((c) => AUTO_LABEL.test(c.label)) ? list.map((c, i) => ({ ...c, label: `C${i + 1}` })) : list;
+}
+
+/** Rebuilds contiguous positions from each compartment's current length, in list order, scaled to L. */
+function restack(list: TankCompartment[], L: number): TankCompartment[] {
+  const total = list.reduce((sum, c) => sum + (c.toX - c.fromX), 0);
+  let x = 0;
+  return list.map((c, i) => {
+    const fromX = x;
+    x = i === list.length - 1 ? L : round3(x + ((c.toX - c.fromX) * L) / (total || 1));
+    return { ...c, fromX, toX: x };
+  });
+}
+
+/** Adds a bulkhead: the largest compartment is split into two halves (capacity and length). */
+export function splitCompartment(list: TankCompartment[], L: number, auto: boolean): TankCompartment[] {
+  if (!list.length) return [{ id: uid('comp'), label: 'C1', fromX: 0, toX: L, capacityL: 1000 }];
+  const i = list.reduce((best, c, j) => (c.capacityL > list[best].capacityL ? j : best), 0);
+  const c = list[i];
+  const mid = round3((c.fromX + c.toX) / 2);
+  const half = Math.round(c.capacityL / 2);
+  const used = new Set(list.map((x) => x.label));
+  let n = list.length + 1;
+  while (used.has(`C${n}`)) n++;
+  const next = [...list];
+  next.splice(i, 1, { ...c, toX: mid, capacityL: c.capacityL - half }, { id: uid('comp'), label: `C${n}`, fromX: mid, toX: c.toX, capacityL: half });
+  const labelled = relabel(next);
+  return auto ? layoutCompartments(labelled, L) : labelled;
+}
+
+/** Removes the bulkhead behind compartment i (or in front of the last one): its space and capacity merge into the neighbour. */
+export function mergeCompartment(list: TankCompartment[], i: number, L: number, auto: boolean): TankCompartment[] {
+  if (list.length <= 1) return list;
+  const into = i === 0 ? 1 : i - 1;
+  const removed = list[i];
+  const next = list
+    .map((c, j) => (j === into ? { ...c, fromX: Math.min(c.fromX, removed.fromX), toX: Math.max(c.toX, removed.toX), capacityL: c.capacityL + removed.capacityL } : c))
+    .filter((_, j) => j !== i);
+  const labelled = relabel(next);
+  return auto ? layoutCompartments(labelled, L) : labelled;
+}
+
+/** Moves compartment i one place toward the front (-1) or rear (+1), keeping each compartment's length. */
+export function moveCompartment(list: TankCompartment[], i: number, dir: -1 | 1, L: number, auto: boolean): TankCompartment[] {
+  const j = i + dir;
+  if (j < 0 || j >= list.length) return list;
+  const next = [...list];
+  [next[i], next[j]] = [next[j], next[i]];
+  const labelled = relabel(next);
+  return auto ? layoutCompartments(labelled, L) : restack(labelled, L);
+}
+
+/** Manual layout: moves the bulkhead between compartments i and i + 1 to x (kept inside both neighbours). */
+export function moveTankBulkhead(list: TankCompartment[], i: number, x: number): TankCompartment[] {
+  const a = list[i];
+  const b = list[i + 1];
+  if (!a || !b) return list;
+  const at = round3(clamp(x, a.fromX + MIN_COMPARTMENT, b.toX - MIN_COMPARTMENT));
+  return list.map((c, j) => (j === i ? { ...c, toX: at } : j === i + 1 ? { ...c, fromX: at } : c));
+}
+
+/** Fits compartments to a new barrel length: re-laid by capacity (auto) or scaled proportionally (manual). */
+export function fitCompartments(list: TankCompartment[], L: number, auto: boolean): TankCompartment[] {
+  return auto ? layoutCompartments(list, L) : restack(list, L);
 }
 
 // --- temperature zones --------------------------------------------------------
@@ -183,6 +300,31 @@ export function validateVehicle(v: Vehicle, sys: UnitSystem): VehicleIssue[] {
       if (z.toX - z.fromX < MIN_ZONE) err(`Zone ${i + 1} must be at least ${len(MIN_ZONE)} long`);
     });
     if (!v.tempControlled && zones.some((z) => z.temp !== 'ambient')) err('Only temperature-controlled vehicles can have chilled or frozen zones');
+  }
+
+  // tank
+  if (v.kind === 'tanker') {
+    const list = v.tank?.compartments ?? [];
+    const litres = (l: number) => formatLitres(l, sys, 0);
+    if (!list.length) err('A tanker needs at least one tank compartment');
+    else {
+      if (Math.abs(list[0].fromX) > 0.001 || Math.abs(list[list.length - 1].toX - L) > 0.001) err(`Compartments must cover the full tank length (0 to ${len(L)})`);
+      list.forEach((c, i) => {
+        const name = c.label.trim() || `Compartment ${i + 1}`;
+        if (i > 0 && Math.abs(c.fromX - list[i - 1].toX) > 0.001) err('Compartments must be contiguous');
+        if (c.toX - c.fromX < MIN_COMPARTMENT - 0.0005) err(`${name} must be at least ${len(MIN_COMPARTMENT)} long`);
+        if (!(c.capacityL > 0)) err(`${name}: capacity must be greater than 0`);
+        else if (c.toX > c.fromX) {
+          const room = barrelLitres(v, c.toX - c.fromX);
+          if (c.capacityL > room * 1.001) err(`${name}: ${litres(c.capacityL)} does not fit in ${len(c.toX - c.fromX)} of barrel (geometric volume ${litres(room)})`);
+        }
+      });
+      const labels = list.map((c) => c.label.trim());
+      if (labels.some((x) => !x) || new Set(labels).size !== labels.length) err('Compartment labels must be unique and not empty');
+      const totalL = list.reduce((sum, c) => sum + c.capacityL, 0);
+      // Water (1 kg/L) is the common reference; heavier liquids (acids, molasses) reach the payload sooner.
+      if (totalL > v.payloadKg + 0.5) warn(`A full load of water (${litres(totalL)} = ${formatMass(totalL, sys)}) exceeds the payload ${formatMass(v.payloadKg, sys)}; part-fill the compartments`);
+    }
   }
 
   if (!issues.some((i) => i.level === 'error')) {

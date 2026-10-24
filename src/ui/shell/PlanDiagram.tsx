@@ -1,13 +1,14 @@
-import { useMemo } from 'react';
+import { useId, useMemo } from 'react';
 import { TEMP_COLORS, TEMP_LABELS } from '../../domain/colors';
 import { footprintOverlap } from '../../domain/geometry';
 import type { Id, Plan, Vehicle } from '../../domain/types';
-import { formatLength, formatWeight } from '../../domain/units';
+import { formatLength, formatPercent, formatWeight } from '../../domain/units';
 import { axleGroups, axlePositions } from '../../physics';
 import { loadingSequence, type LoadStep } from '../../sim/sequence';
 import { evaluatePlan } from '../../state/evaluate';
 import { ColorDot } from '../common/Chip';
 import { stopColorsBySeq } from './shellFormat';
+import { compartmentRows, formatCargoLitres, type CompartmentRow } from './tanker';
 
 export interface PlanDiagramProps {
   plan: Plan;
@@ -39,7 +40,7 @@ function cargoFrameAxles(v: Vehicle): { x: number; groupIndex: number }[] {
 }
 
 function fit(text: string, px: number, fontSize: number): string {
-  const max = Math.floor(px / (fontSize * 0.56));
+  const max = Math.floor(px / (fontSize * 0.6));
   if (max < 3) return '';
   return text.length <= max ? text : `${text.slice(0, Math.max(1, max - 1))}…`;
 }
@@ -99,11 +100,135 @@ function buildStacks(steps: LoadStep[], weightOf: (id: Id) => number): Stack[] {
   return [...stacks.values()];
 }
 
+/** Label of a compartment in the diagrams: ["C1 · Diesel", "7,700 L · Stop 1"] (or "C1 · empty"). */
+function compartmentText(row: CompartmentRow, sys: Plan['settings']['units']): [string, string] {
+  const u = row.fills[0];
+  if (!u) return [`${row.compartment.label} · empty`, formatCargoLitres(row.compartment.capacityL, sys)];
+  return [`${row.compartment.label} · ${u.spec.liquid?.name ?? u.spec.name}`, `${formatCargoLitres(row.volumeL, sys)} · Stop ${u.stopSeq}`];
+}
+
+const LABEL_FS = 9;
+/** Conservative text width estimate (bold, tabular digits) so labels never spill into the next compartment. */
+const fitsWidth = (text: string, px: number): boolean => text.length * LABEL_FS * 0.62 <= px;
+
+/**
+ * Side-view label lines for a compartment, longest form that fits: "C1 · Diesel (solar) · 7,700 L · Stop 1",
+ * then "C1 Diesel (solar) 7,700 L", "C1 Diesel 7,700 L", then two lines ("C1 Diesel" / "7,700 L"). The stop is on the lid.
+ */
+function tankLabelLines(row: CompartmentRow, sys: Plan['settings']['units'], px: number): string[] {
+  const c = row.compartment.label;
+  const u = row.fills[0];
+  const name = u ? (u.spec.liquid?.name ?? u.spec.name) : 'empty';
+  const short = name.replace(/\s*\(.*\)\s*/, '');
+  const litres = formatCargoLitres(u ? row.volumeL : row.compartment.capacityL, sys);
+  const candidates = u ? [`${c} · ${name} · ${litres} · Stop ${u.stopSeq}`, `${c} ${name} ${litres}`, `${c} ${short} ${litres}`] : [`${c} empty · ${litres}`];
+  const one = candidates.find((t) => fitsWidth(t, px));
+  if (one) return [one];
+  return [`${c} ${short}`, litres].map((t) => (fitsWidth(t, px) ? t : fit(t, px, LABEL_FS * 1.1)));
+}
+
+/** Tank barrel in side elevation: bulkheads, liquid levels in each liquid's colour, max-fill lines and stop-coloured lids. */
+function TankSide({
+  plan,
+  v,
+  X,
+  Z,
+  s,
+  clipId,
+  selected,
+  onSelect,
+}: {
+  plan: Plan;
+  v: Vehicle;
+  X: (x: number) => number;
+  Z: (z: number) => number;
+  s: number;
+  clipId: string;
+  selected: Set<Id>;
+  onSelect?: (unitIds: Id[]) => void;
+}) {
+  const sys = plan.settings.units;
+  const rows = compartmentRows(plan, evaluatePlan(plan).units, v);
+  const colors = stopColorsBySeq(plan);
+  const h = v.cargo.h;
+  const r = Math.min((h * s) / 2, 22);
+  const halo = { paintOrder: 'stroke' as const, stroke: 'white', strokeWidth: 3, strokeLinejoin: 'round' as const };
+  return (
+    <g>
+      <defs>
+        <clipPath id={`${clipId}s`}>
+          <rect x={X(0)} y={Z(h)} width={v.cargo.l * s} height={h * s} rx={r} />
+        </clipPath>
+      </defs>
+      {rows.map((row) => {
+        const first = row.fills[0];
+        const cx = X((row.compartment.fromX + row.compartment.toX) / 2);
+        return (
+          <g key={`lid${row.compartment.id}`}>
+            <rect x={cx - 10} y={Z(h) - 10} width={20} height={10} rx={2.5} fill={first ? (colors.get(first.stopSeq) ?? '#999') : LINE} />
+            {first && (
+              <text x={cx} y={Z(h) - 2.5} textAnchor="middle" fontSize={7.5} fontWeight={700} fill="white" fontFamily={FONT} className="num">
+                {first.stopSeq}
+              </text>
+            )}
+          </g>
+        );
+      })}
+      <g clipPath={`url(#${clipId}s)`}>
+        <rect x={X(0)} y={Z(h)} width={v.cargo.l * s} height={h * s} fill="#F4F2EC" />
+        {rows.map((row) => {
+          const c = row.compartment;
+          const w = (c.toX - c.fromX) * s;
+          const first = row.fills[0];
+          const level = Math.min(1, row.fill);
+          const isSel = row.fills.some((u) => selected.has(u.id));
+          return (
+            <g key={c.id} onClick={onSelect && first ? () => onSelect(row.fills.map((u) => u.id)) : undefined} style={onSelect && first ? { cursor: 'pointer' } : undefined}>
+              <title>{`${compartmentText(row, sys).join(' · ')} · ${formatPercent(row.fill)} full (max ${formatPercent(row.maxFill)})`}</title>
+              <rect x={X(c.fromX)} y={Z(h)} width={w} height={h * s} fill="transparent" />
+              {first && <rect x={X(c.fromX)} y={Z(level * h)} width={w} height={level * h * s} fill={row.color} fillOpacity={0.85} />}
+              {first && <line x1={X(c.fromX) + 3} x2={X(c.toX) - 3} y1={Z(row.maxFill * h)} y2={Z(row.maxFill * h)} stroke={INK} strokeDasharray="3 2" strokeWidth={0.8} />}
+              {isSel && <rect x={X(c.fromX) + 1} y={Z(h) + 1} width={w - 2} height={h * s - 2} fill="none" stroke={INK} strokeWidth={2.25} />}
+            </g>
+          );
+        })}
+        {rows.slice(1).map((row) => (
+          <line key={`bh${row.compartment.id}`} x1={X(row.compartment.fromX)} x2={X(row.compartment.fromX)} y1={Z(h)} y2={Z(0)} stroke={INK} strokeWidth={1.5} />
+        ))}
+      </g>
+      <rect x={X(0)} y={Z(h)} width={v.cargo.l * s} height={h * s} rx={r} fill="none" stroke={INK} strokeWidth={1.75} />
+      {rows.map((row) => {
+        const c = row.compartment;
+        const w = (c.toX - c.fromX) * s;
+        const cx = X((c.fromX + c.toX) / 2);
+        const lines = tankLabelLines(row, sys, w - 8);
+        const top = Z(h * 0.55) - ((lines.length - 1) * 11) / 2;
+        return (
+          <g key={`t${c.id}`} pointerEvents="none" fontFamily={FONT}>
+            {lines.map((text, i) => (
+              <text key={i} x={cx} y={top + i * 11} textAnchor="middle" fontSize={LABEL_FS} fontWeight={i === 0 ? 700 : 500} fill={INK} className="num" style={halo}>
+                {text}
+              </text>
+            ))}
+            {row.fills.length > 0 && (
+              <text x={cx} y={Z(0) - 4} textAnchor="middle" fontSize={8} fill={INK} className="num" style={halo}>
+                {formatPercent(row.fill)}
+              </text>
+            )}
+          </g>
+        );
+      })}
+    </g>
+  );
+}
+
 /**
  * Printable, dimensioned 2D drawing of one vehicle: top-down floor plan or side elevation, units
  * coloured by stop and labelled with their loading-sequence number, bays, temperature zones and axles.
+ * Tankers show the barrel with compartments and liquid levels instead.
  */
 export function PlanDiagram({ plan, vehicleId, mode, width, selection, onSelect }: PlanDiagramProps) {
+  const clipId = `tank${useId().replace(/[^\w-]/g, '')}`;
   const evaluation = evaluatePlan(plan);
   const v = plan.vehicles.find((x) => x.id === vehicleId) ?? plan.vehicles[0];
   const sys = plan.settings.units;
@@ -124,6 +249,54 @@ export function PlanDiagram({ plan, vehicleId, mode, width, selection, onSelect 
   const mt = mode === 'top' ? 22 : 34;
   const s = Math.max(1, (width - ml - mr) / (xMax - xMin));
   const X = (x: number) => ml + (x - xMin) * s;
+
+  if (v.tank && mode === 'top') {
+    const rows = compartmentRows(plan, evaluation.units, v);
+    const mb = 40;
+    const height = mt + v.cargo.w * s + mb;
+    const Y = (y: number) => mt + y * s;
+    const r = Math.min((v.cargo.w * s) / 2, 18);
+    return (
+      <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`Top view of ${v.name}: ${rows.length} compartments`} className="h-auto max-w-full" style={{ fontFamily: FONT }}>
+        <defs>
+          <clipPath id={`${clipId}t`}>
+            <rect x={X(0)} y={Y(0)} width={v.cargo.l * s} height={v.cargo.w * s} rx={r} />
+          </clipPath>
+        </defs>
+        <g clipPath={`url(#${clipId}t)`}>
+          {rows.map((row) => {
+            const c = row.compartment;
+            const first = row.fills[0];
+            const isSel = row.fills.some((u) => selected.has(u.id));
+            const [l1, l2] = compartmentText(row, sys);
+            const w = (c.toX - c.fromX) * s;
+            return (
+              <g key={c.id} onClick={onSelect && first ? () => onSelect(row.fills.map((u) => u.id)) : undefined} style={onSelect && first ? { cursor: 'pointer' } : undefined}>
+                <title>{`${l1} · ${l2} · ${formatPercent(row.fill)} full`}</title>
+                <rect x={X(c.fromX)} y={Y(0)} width={w} height={v.cargo.w * s} fill={first ? row.color : '#F1EFEA'} fillOpacity={first ? 0.25 + 0.6 * Math.min(1, row.fill) : 1} stroke={isSel ? INK : 'none'} strokeWidth={2} />
+                <text x={X(c.fromX) + w / 2} y={Y(v.cargo.w / 2) - 2} textAnchor="middle" fontSize={9.5} fontWeight={700} fill={INK}>
+                  {fit(l1, w - 6, 9.5)}
+                </text>
+                <text x={X(c.fromX) + w / 2} y={Y(v.cargo.w / 2) + 10} textAnchor="middle" fontSize={8.5} fill={INK} className="num">
+                  {fit(l2, w - 6, 8.5)}
+                </text>
+                {first && <rect x={X(c.fromX) + w / 2 - 6} y={Y(0) + 4} width={12} height={5} rx={2.5} fill={colors.get(first.stopSeq) ?? '#999'} />}
+              </g>
+            );
+          })}
+          {rows.slice(1).map((row) => (
+            <line key={row.compartment.id} x1={X(row.compartment.fromX)} x2={X(row.compartment.fromX)} y1={Y(0)} y2={Y(v.cargo.w)} stroke={INK} strokeWidth={1.25} />
+          ))}
+        </g>
+        <rect x={X(0)} y={Y(0)} width={v.cargo.l * s} height={v.cargo.w * s} rx={r} fill="none" stroke={INK} strokeWidth={1.75} />
+        <text transform={`translate(${ml - 10} ${Y(v.cargo.w / 2)}) rotate(-90)`} textAnchor="middle" fontSize={8.5} fontWeight={600} fill={MUTED} letterSpacing={1}>
+          FRONT
+        </text>
+        <DimLine x1={X(0)} y1={Y(v.cargo.w) + 20} x2={X(v.cargo.l)} y2={Y(v.cargo.w) + 20} label={formatLength(v.cargo.l, sys, { big: true })} />
+        <DimLine x1={X(v.cargo.l) + 22} y1={Y(0)} x2={X(v.cargo.l) + 22} y2={Y(v.cargo.w)} label={formatLength(v.cargo.w, sys, { big: true })} vertical />
+      </svg>
+    );
+  }
 
   if (mode === 'top') {
     const mb = showZones ? 52 : 40;
@@ -212,7 +385,7 @@ export function PlanDiagram({ plan, vehicleId, mode, width, selection, onSelect 
     );
   }
 
-  // Side elevation, viewed from the left (y = 0) wall: nearer units are drawn last.
+  // Side elevation, viewed from the left (y = 0) wall: nearer units are drawn last. Tankers show the barrel.
   const wheelR = Math.min(0.5, v.deckHeight * 0.75);
   const mb = 30;
   const height = mt + (v.cargo.h + v.deckHeight) * s + mb;
@@ -252,34 +425,40 @@ export function PlanDiagram({ plan, vehicleId, mode, width, selection, onSelect 
           {g.label}
         </text>
       ))}
-      {showZones &&
-        v.zones.map((z) => (
-          <rect key={z.id} x={X(z.fromX)} y={Z(v.cargo.h)} width={(z.toX - z.fromX) * s} height={v.cargo.h * s} fill={TEMP_COLORS[z.temp]} fillOpacity={0.12} />
-        ))}
-      {bays.slice(1).map((b) => (
-        <line key={b.label} x1={X(b.fromX)} x2={X(b.fromX)} y1={Z(v.cargo.h)} y2={floorY} stroke={LINE} strokeDasharray="3 3" strokeWidth={0.6} />
-      ))}
-      {sorted.map((st) => {
-        const b = st.box;
-        const x = X(b.min.x);
-        const y = Z(b.max.z);
-        const w = (b.max.x - b.min.x) * s;
-        const h = (b.max.z - b.min.z) * s;
-        const seq = seqOf.get(st.unitId) ?? 0;
-        const isSel = selected.has(st.unitId);
-        return (
-          <g key={st.unitId} onClick={onSelect ? () => onSelect([st.unitId]) : undefined} style={onSelect ? { cursor: 'pointer' } : undefined}>
-            <title>{`Step ${seq}: ${st.name} · ${formatWeight(weightOf(st.unitId), sys)} · ${st.position}`}</title>
-            <rect x={x + 0.5} y={y + 0.5} width={Math.max(1, w - 1)} height={Math.max(1, h - 1)} rx={1.5} fill={colors.get(st.stopSeq) ?? '#999'} fillOpacity={0.85} stroke={isSel ? INK : 'white'} strokeWidth={isSel ? 2 : 0.9} />
-            {w > 14 && h > 14 && (
-              <text x={x + w / 2} y={y + h / 2 + 3.5} textAnchor="middle" fontSize={9} fontWeight={700} fill={INK} className="num">
-                {seq}
-              </text>
-            )}
-          </g>
-        );
-      })}
-      <rect x={X(0)} y={Z(v.cargo.h)} width={v.cargo.l * s} height={v.cargo.h * s} fill="none" stroke={INK} strokeWidth={1.75} strokeDasharray={v.walls ? undefined : '6 4'} />
+      {v.tank ? (
+        <TankSide plan={plan} v={v} X={X} Z={Z} s={s} clipId={clipId} selected={selected} onSelect={onSelect} />
+      ) : (
+        <>
+          {showZones &&
+            v.zones.map((z) => (
+              <rect key={z.id} x={X(z.fromX)} y={Z(v.cargo.h)} width={(z.toX - z.fromX) * s} height={v.cargo.h * s} fill={TEMP_COLORS[z.temp]} fillOpacity={0.12} />
+            ))}
+          {bays.slice(1).map((b) => (
+            <line key={b.label} x1={X(b.fromX)} x2={X(b.fromX)} y1={Z(v.cargo.h)} y2={floorY} stroke={LINE} strokeDasharray="3 3" strokeWidth={0.6} />
+          ))}
+          {sorted.map((st) => {
+            const b = st.box;
+            const x = X(b.min.x);
+            const y = Z(b.max.z);
+            const w = (b.max.x - b.min.x) * s;
+            const h = (b.max.z - b.min.z) * s;
+            const seq = seqOf.get(st.unitId) ?? 0;
+            const isSel = selected.has(st.unitId);
+            return (
+              <g key={st.unitId} onClick={onSelect ? () => onSelect([st.unitId]) : undefined} style={onSelect ? { cursor: 'pointer' } : undefined}>
+                <title>{`Step ${seq}: ${st.name} · ${formatWeight(weightOf(st.unitId), sys)} · ${st.position}`}</title>
+                <rect x={x + 0.5} y={y + 0.5} width={Math.max(1, w - 1)} height={Math.max(1, h - 1)} rx={1.5} fill={colors.get(st.stopSeq) ?? '#999'} fillOpacity={0.85} stroke={isSel ? INK : 'white'} strokeWidth={isSel ? 2 : 0.9} />
+                {w > 14 && h > 14 && (
+                  <text x={x + w / 2} y={y + h / 2 + 3.5} textAnchor="middle" fontSize={9} fontWeight={700} fill={INK} className="num">
+                    {seq}
+                  </text>
+                )}
+              </g>
+            );
+          })}
+          <rect x={X(0)} y={Z(v.cargo.h)} width={v.cargo.l * s} height={v.cargo.h * s} fill="none" stroke={INK} strokeWidth={1.75} strokeDasharray={v.walls ? undefined : '6 4'} />
+        </>
+      )}
       <DimLine x1={X(0)} y1={mt - 16} x2={X(v.cargo.l)} y2={mt - 16} label={formatLength(v.cargo.l, sys, { big: true })} />
       <DimLine x1={X(v.cargo.l) + 22} y1={Z(v.cargo.h)} x2={X(v.cargo.l) + 22} y2={floorY} label={formatLength(v.cargo.h, sys, { big: true })} vertical />
     </svg>
@@ -294,7 +473,10 @@ export function PlanLegend({ plan, vehicleId }: { plan: Plan; vehicleId: Id }) {
   const colors = stopColorsBySeq(plan);
   const customers = new Map(plan.customers.map((c) => [c.id, c.name]));
   const stops = [...plan.stops].sort((a, b) => a.sequence - b.sequence).filter((s) => seqs.has(s.sequence));
-  const temps = v.tempControlled || v.zones.length > 1 ? [...new Set(v.zones.map((z) => z.temp))] : [];
+  const temps = !v.tank && (v.tempControlled || v.zones.length > 1) ? [...new Set(v.zones.map((z) => z.temp))] : [];
+  const liquids = v.tank
+    ? [...new Map(compartmentRows(plan, evaluation.units, v).flatMap((r) => r.fills.map((u) => [u.spec.liquid?.name ?? u.spec.name, r.color] as const))).entries()]
+    : [];
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-ink-soft">
       {stops.map((s) => (
@@ -309,14 +491,37 @@ export function PlanLegend({ plan, vehicleId }: { plan: Plan; vehicleId: Id }) {
           {TEMP_LABELS[t]} zone
         </span>
       ))}
-      <span className="flex items-center gap-1.5">
-        <span className="num inline-flex h-4 w-4 items-center justify-center rounded-full border border-line-strong bg-white text-[9px] font-bold">7</span>
-        loading step
-      </span>
-      <span className="flex items-center gap-1.5">
-        <span className="num inline-flex h-3.5 items-center rounded-full bg-ink px-1.5 text-[9px] font-bold text-white">×2</span>
-        stacked units
-      </span>
+      {v.tank ? (
+        <>
+          {liquids.map(([name, color]) => (
+            <span key={name} className="flex items-center gap-1.5">
+              <span className="inline-block h-2.5 w-4 rounded-sm" style={{ background: color, opacity: 0.85 }} aria-hidden />
+              {name}
+            </span>
+          ))}
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block w-4 border-t border-dashed border-ink" aria-hidden />
+            max safe fill
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="num inline-flex h-3 w-4 items-center justify-center rounded-sm bg-ink-soft text-[8px] font-bold text-white" aria-hidden>
+              1
+            </span>
+            lid = delivery stop
+          </span>
+        </>
+      ) : (
+        <>
+          <span className="flex items-center gap-1.5">
+            <span className="num inline-flex h-4 w-4 items-center justify-center rounded-full border border-line-strong bg-white text-[9px] font-bold">7</span>
+            loading step
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="num inline-flex h-3.5 items-center rounded-full bg-ink px-1.5 text-[9px] font-bold text-white">×2</span>
+            stacked units
+          </span>
+        </>
+      )}
     </div>
   );
 }

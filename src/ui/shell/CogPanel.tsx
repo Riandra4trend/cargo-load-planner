@@ -39,7 +39,11 @@ export function CogPanel({ shown }: { shown: ShownState }) {
     <Section title="Centre of gravity" icon={<Crosshair />}>
       {cog ? (
         <div className="divide-y divide-line/70">
-          <Row label="From front wall" value={formatLength(cog.x, sys, { big: true })} sub={`of ${formatLength(v.cargo.l, sys, { big: true })} floor`} />
+          <Row
+            label={v.tank ? 'From tank front' : 'From front wall'}
+            value={formatLength(cog.x, sys, { big: true })}
+            sub={`of ${formatLength(v.cargo.l, sys, { big: true })} ${v.tank ? 'tank' : 'floor'}`}
+          />
           <Row
             label="Lateral offset"
             value={Math.abs(cog.y - v.cargo.w / 2) < 0.005 ? 'centred' : `${formatLength(Math.abs(cog.y - v.cargo.w / 2), sys, { unit: sys === 'metric' ? 'cm' : 'in' })} ${cog.y < v.cargo.w / 2 ? 'left' : 'right'}`}
@@ -52,7 +56,7 @@ export function CogPanel({ shown }: { shown: ShownState }) {
             sub={`${formatLength(cog.z + v.deckHeight, sys, { big: true })} above ground · max ${formatLength(v.maxCogHeight, sys, { big: true })}`}
             ok={cog.z <= v.maxCogHeight + 1e-9}
           />
-          {shown.stage === 0 && (
+          {shown.stage === 0 && !v.tank && (
             <Row
               label="Floor peak load"
               value={formatLinearLoad(ve.floorPeak.kgPerM, sys)}

@@ -14,7 +14,7 @@ import { UnitMesh } from './UnitMesh';
 /** Seconds per forklift move at speed 1. */
 const LOAD_STEP_S = 1.6;
 /** Seconds for one stop's units to leave the vehicle at speed 1, and the pause before the next stop. */
-const UNLOAD_STEP_S = 1.8;
+export const UNLOAD_STEP_S = 1.8;
 const UNLOAD_HOLD_S = 0.6;
 const FORK_TRAVEL_Z = 0.12;
 
@@ -107,7 +107,7 @@ interface ForkPose {
  * the aisle, forks toward +x), reverses out, turns, drives through the rear doors and sets the unit
  * down at its planned position, then backs off. Advances `ui.animation.step` after each move.
  */
-export function LoadSimulation({ dock, current, step, total, playing, speed, color, realistic }: {
+export function LoadSimulation({ dock, current, step, total, playing, speed, color, realistic, waiting }: {
   dock: DockLayout;
   current: SimulationLayout['current'];
   step: number;
@@ -116,6 +116,8 @@ export function LoadSimulation({ dock, current, step, total, playing, speed, col
   speed: number;
   color: string | null;
   realistic: boolean;
+  /** The current step is driven elsewhere (a tank compartment filling): park and keep playing. */
+  waiting: boolean;
 }) {
   const rootRef = useRef<Group>(null);
   const carriageRef = useRef<Group>(null);
@@ -223,7 +225,7 @@ export function LoadSimulation({ dock, current, step, total, playing, speed, col
       progress.current = 0;
       expectedStep.current = step + 1;
       useStore.getState().setAnimation(step + 1 >= total ? { step: step + 1, playing: false } : { step: step + 1 });
-    } else if (!plan && playing) {
+    } else if (!plan && playing && !waiting) {
       useStore.getState().setAnimation({ playing: false });
     }
   });

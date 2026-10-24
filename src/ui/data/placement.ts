@@ -1,4 +1,5 @@
-import type { Id, Placement } from '../../domain/types';
+import { isBulkLiquid } from '../../domain/geometry';
+import type { Id, ItemSpec, Placement } from '../../domain/types';
 import { findPlacementFor } from '../../packing';
 import { useStore } from '../../state/store';
 
@@ -20,8 +21,13 @@ export function placeOnVehicle(unitIds: Id[], vehicleId: Id): number {
   return found.length;
 }
 
-/** The active vehicle id, falling back to the first vehicle when the selection is stale. */
-export function activeVehicleId(): Id | undefined {
+/**
+ * Vehicle to place a unit of this spec on: the active vehicle when it is the right kind (tankers take
+ * bulk fills, the others everything else), else the first vehicle of the right kind.
+ */
+export function targetVehicleId(spec: ItemSpec): Id | undefined {
   const { plan, ui } = useStore.getState();
-  return plan.vehicles.find((v) => v.id === ui.activeVehicleId)?.id ?? plan.vehicles[0]?.id;
+  const bulk = isBulkLiquid(spec);
+  const matching = plan.vehicles.filter((v) => !!v.tank === bulk);
+  return (matching.find((v) => v.id === ui.activeVehicleId) ?? matching[0])?.id;
 }

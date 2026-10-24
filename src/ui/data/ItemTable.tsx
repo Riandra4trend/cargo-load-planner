@@ -20,10 +20,10 @@ import {
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { TEMP_COLORS, TEMP_LABELS, hazmatColor } from '../../domain/colors';
-import { volumeOf } from '../../domain/geometry';
+import { isBulkLiquid, lineIdOfUnit, volumeOf } from '../../domain/geometry';
 import { HAZMAT_CLASS_NAMES } from '../../domain/settings';
-import type { CargoLine, CargoUnit, Customer, Id, Placement, Stop, UnitStatus } from '../../domain/types';
-import { formatDims, formatWeight, fromKg, parseNumber, toKg, weightUnit } from '../../domain/units';
+import type { CargoLine, CargoUnit, Customer, Id, Placement, Plan, Stop, UnitStatus, Vehicle } from '../../domain/types';
+import { formatDims, formatLitres, formatWeight, fromKg, parseNumber, toKg, weightUnit } from '../../domain/units';
 import { downloadItemsCsv } from '../../io/csv';
 import { loadingSequence } from '../../sim/sequence';
 import { useDisplayPlan, useEvaluation } from '../../state/hooks';
@@ -32,7 +32,7 @@ import { Button, IconButton } from '../common/Button';
 import { Card, CardHeader } from '../common/Card';
 import { ColorDot, UnitStatusChip } from '../common/Chip';
 import { inputClass } from '../common/fields';
-import { placeOnVehicle } from './placement';
+import { placeOnVehicle, targetVehicleId } from './placement';
 
 type SortKey = 'item' | 'sku' | 'origin' | 'category' | 'qty' | 'dims' | 'weight' | 'bay' | 'customer' | 'stop' | 'temp' | 'hazmat' | 'status';
 
@@ -84,7 +84,7 @@ function sortValue(r: Row, key: SortKey): string | number {
     case 'qty':
       return r.line.quantity;
     case 'dims':
-      return volumeOf(s.dims);
+      return isBulkLiquid(s) ? (s.liquid?.volumeL ?? 0) / 1000 : volumeOf(s.dims);
     case 'weight':
       return s.weightKg;
     case 'bay':
@@ -220,6 +220,38 @@ function StopCell({ row, stops, customers, disabled, onChange }: { row: Row; sto
   );
 }
 
+/** Tanker compartment of a bulk fill on the active tanker: choosing a filled compartment swaps the fills, "—" unloads. */
+function CompartmentCell({ plan, vehicle, unitId, current, disabled }: { plan: Plan; vehicle: Vehicle; unitId: Id; current?: Id; disabled: boolean }) {
+  const sys = plan.settings.units;
+  const occupantName = (compartmentId: Id): string | undefined => {
+    const p = Object.values(plan.placements).find((x) => x.vehicleId === vehicle.id && x.compartmentId === compartmentId && x.unitId !== unitId);
+    return p ? plan.lines.find((l) => l.id === lineIdOfUnit(p.unitId))?.spec.name : undefined;
+  };
+  const { assignCompartment, unplaceUnits } = useStore.getState();
+  return (
+    <select
+      value={current ?? ''}
+      disabled={disabled}
+      aria-label="Tanker compartment"
+      onClick={stopPropagation}
+      onKeyDown={stopPropagation}
+      onChange={(e) => (e.target.value ? assignCompartment(unitId, vehicle.id, e.target.value) : unplaceUnits([unitId]))}
+      className={`${inputClass} h-7 w-24 px-1.5 font-mono text-xs`}
+    >
+      <option value="">—</option>
+      {vehicle.tank!.compartments.map((c) => {
+        const occupant = c.id === current ? undefined : occupantName(c.id);
+        return (
+          <option key={c.id} value={c.id}>
+            {c.label} · {formatLitres(c.capacityL, sys, 0)}
+            {c.id === current ? '' : occupant ? (current ? ` · swap with ${occupant}` : ` · unloads ${occupant}`) : ' · empty'}
+          </option>
+        );
+      })}
+    </select>
+  );
+}
+
 export function ItemTable() {
   const plan = useDisplayPlan();
   const ev = useEvaluation();
@@ -271,6 +303,7 @@ export function ItemTable() {
 
   const secondId = plan.vehicles[1]?.id;
   const activeId = plan.vehicles.some((v) => v.id === activeVehicleId) ? activeVehicleId : plan.vehicles[0]?.id;
+  const activeTanker = plan.vehicles.find((v) => v.id === activeId && v.tank);
   const tab: TableTab = tableTab === 'vehicle2' && !secondId ? 'all' : tableTab;
   const tabs: { key: TableTab; label: string }[] = [
     { key: 'all', label: 'All' },
@@ -287,7 +320,7 @@ export function ItemTable() {
       if (!inTab(r, tab, activeId, secondId)) return false;
       if (!q) return true;
       const s = r.unit.spec;
-      return [s.name, s.sku, r.customer?.name ?? '', r.stop?.name ?? '', `stop ${r.unit.stopSeq}`].some((t) => t.toLowerCase().includes(q));
+      return [s.name, s.sku, s.liquid?.name ?? '', r.customer?.name ?? '', r.stop?.name ?? '', `stop ${r.unit.stopSeq}`].some((t) => t.toLowerCase().includes(q));
     });
     if (!sort) return list;
     return list
@@ -325,10 +358,15 @@ export function ItemTable() {
 
   const place = (r: Row) => {
     const { toast, plan: committed } = store();
-    if (!activeId) return;
-    const name = committed.vehicles.find((v) => v.id === activeId)?.name ?? 'the vehicle';
-    if (placeOnVehicle([r.unit.id], activeId)) toast(`Placed ${r.unit.spec.name} on ${name}`, 'success');
-    else toast(`No legal space for ${r.unit.spec.name} on ${name}`, 'error');
+    const vehicleId = targetVehicleId(r.unit.spec);
+    const bulk = isBulkLiquid(r.unit.spec);
+    if (!vehicleId) {
+      toast(bulk ? `${r.unit.spec.name} needs a tanker: add one to this plan` : `No box or flatbed vehicle for ${r.unit.spec.name} in this plan`, 'error');
+      return;
+    }
+    const name = committed.vehicles.find((v) => v.id === vehicleId)?.name ?? 'the vehicle';
+    if (placeOnVehicle([r.unit.id], vehicleId)) toast(`Placed ${r.unit.spec.name} on ${name}`, 'success');
+    else toast(bulk ? `No free compartment on ${name} can take ${r.unit.spec.name}` : `No legal space for ${r.unit.spec.name} on ${name}`, 'error');
   };
 
   const duplicate = (r: Row) => {
@@ -492,22 +530,36 @@ export function ItemTable() {
                     <td className={`${cell} text-ink-soft`}>{s.category || '-'}</td>
                     <td className={`${cell} text-right`}>
                       <InlineNumber display={line.quantity} value={line.quantity} digits={0} min={1} label="Quantity" disabled={locked} onCommit={(n) => store().updateLine(line.id, { quantity: Math.round(n) })} />
-                      {line.contents && <div className="max-w-32 truncate text-[10.5px] text-muted" title={line.contents}>{line.contents}</div>}
+                      {s.liquid ? (
+                        <div className="max-w-40 truncate text-[10.5px] text-muted" title={s.liquid.name}>
+                          {formatLitres(s.liquid.volumeL, sys, 0)} {s.liquid.name}
+                        </div>
+                      ) : (
+                        line.contents && <div className="max-w-32 truncate text-[10.5px] text-muted" title={line.contents}>{line.contents}</div>
+                      )}
                     </td>
-                    <td className={`${cell} font-mono num text-ink-soft`}>{formatDims(s.dims, sys)}</td>
+                    <td className={`${cell} font-mono num text-ink-soft`}>{isBulkLiquid(s) ? <span className="text-muted" title="Bulk fill: carried in a tanker compartment">—</span> : formatDims(s.dims, sys)}</td>
                     <td className={`${cell} text-right`}>
-                      <InlineNumber
-                        display={formatWeight(s.weightKg, sys)}
-                        value={fromKg(s.weightKg, wUnit)}
-                        digits={1}
-                        min={Number.MIN_VALUE}
-                        label={`Weight per unit (${wUnit})`}
-                        disabled={locked}
-                        onCommit={(n) => store().updateLine(line.id, { spec: { weightKg: toKg(n, wUnit) } })}
-                      />
+                      {s.liquid ? (
+                        <span className="px-1 font-mono num" title="Calculated: volume × density + container">
+                          {formatWeight(s.weightKg, sys)}
+                        </span>
+                      ) : (
+                        <InlineNumber
+                          display={formatWeight(s.weightKg, sys)}
+                          value={fromKg(s.weightKg, wUnit)}
+                          digits={1}
+                          min={Number.MIN_VALUE}
+                          label={`Weight per unit (${wUnit})`}
+                          disabled={locked}
+                          onCommit={(n) => store().updateLine(line.id, { spec: { weightKg: toKg(n, wUnit) } })}
+                        />
+                      )}
                     </td>
                     <td className={`${cell} font-mono num text-ink-soft`}>
-                      {placement ? (
+                      {activeTanker && isBulkLiquid(s) && (!placement || placement.vehicleId === activeTanker.id) ? (
+                        <CompartmentCell plan={plan} vehicle={activeTanker} unitId={unit.id} current={placement?.compartmentId} disabled={locked} />
+                      ) : placement ? (
                         <>
                           {plan.vehicles.length > 1 && <span className="text-muted">T{r.vehicleIndex + 1} · </span>}
                           {r.bay}
@@ -564,7 +616,7 @@ export function ItemTable() {
                             </IconButton>
                           </>
                         ) : (
-                          <IconButton size="sm" label="Place on active vehicle" disabled={locked || !activeId} onClick={() => place(r)}>
+                          <IconButton size="sm" label="Place on a vehicle (active vehicle first)" disabled={locked} onClick={() => place(r)}>
                             <PackagePlus className="h-3.5 w-3.5" />
                           </IconButton>
                         )}

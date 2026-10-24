@@ -62,6 +62,24 @@ export function hazmatTexture(hazClass: string, color: string): CanvasTexture {
   });
 }
 
+/** ADR orange plate: hazard identification number over the UN number (both blank on front/rear plates). */
+export function adrPlateTexture(hazardId: string, unNumber: string): CanvasTexture {
+  return cached(`adr:${hazardId}:${unNumber}`, 160, 120, (ctx) => {
+    ctx.fillStyle = '#1d1d1b';
+    ctx.fillRect(0, 0, 160, 120);
+    ctx.fillStyle = '#f08c00';
+    ctx.fillRect(7, 7, 146, 106);
+    if (!hazardId && !unNumber) return;
+    ctx.fillStyle = '#1d1d1b';
+    ctx.fillRect(7, 57, 146, 6);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = `800 40px ${FONT}`;
+    ctx.fillText(hazardId, 80, 34);
+    ctx.fillText(unNumber.replace(/^UN/i, ''), 80, 88);
+  });
+}
+
 /** "Fragile" handling glyph: a wine glass on a white label. */
 export function fragileTexture(): CanvasTexture {
   return cached('fragile', 128, 128, (ctx) => {

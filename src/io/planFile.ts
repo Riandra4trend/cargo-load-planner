@@ -30,8 +30,8 @@ export function downloadPlanJson(plan: Plan): void {
 
 /**
  * Fills fields added after a plan was saved (fuel profiles and settings, per-stop leg distances, the
- * return leg), so older files, share links and autosaves keep loading. A legacy route total is spread
- * evenly over the stops that have no leg distance.
+ * return leg, the tank pressure flag), so older files, share links and autosaves keep loading. A legacy
+ * route total is spread evenly over the stops that have no leg distance.
  */
 function upgradePlan(plan: Plan): Plan {
   plan.settings = { ...defaultSettings(), ...plan.settings };
@@ -45,7 +45,10 @@ function upgradePlan(plan: Plan): Plan {
     const each = Math.max(0, legacyKm - known) / missing.length;
     for (const s of missing) s.distanceKm = Math.round(each * 10) / 10;
   }
-  for (const v of plan.vehicles) if (v && !v.fuel) v.fuel = defaultFuelProfile(v);
+  for (const v of plan.vehicles) {
+    if (v && !v.fuel) v.fuel = defaultFuelProfile(v);
+    if (v?.tank && typeof v.tank.pressurised !== 'boolean') v.tank.pressurised = false;
+  }
   return plan;
 }
 
@@ -79,12 +82,20 @@ export function parsePlanJson(text: string): Plan {
     if (typeof l?.id !== 'string' || !d || !isNum(d.l) || !isNum(d.w) || !isNum(d.h) || !isNum(l.spec.weightKg)) throw new Error(`Item "${l?.spec?.name ?? '?'}" has invalid dimensions or weight.`);
     if (!Number.isInteger(l.quantity) || l.quantity < 1) throw new Error(`Item "${l.spec.name}" has an invalid quantity.`);
     if (!stopIds.has(l.stopId)) throw new Error(`Item "${l.spec.name}" refers to an unknown stop.`);
+    const liquid = l.spec.liquid;
+    if (liquid && (!isNum(liquid.volumeL) || !isNum(liquid.densityKgPerL) || typeof liquid.liquidId !== 'string')) throw new Error(`Item "${l.spec.name}" has invalid liquid contents.`);
   }
   for (const v of plan.vehicles) {
     if (typeof v?.id !== 'string' || !v.cargo || !isNum(v.cargo.l) || (v.statics?.type !== 'rigid' && v.statics?.type !== 'artic')) throw new Error(`Vehicle "${v?.name ?? '?'}" is incomplete.`);
+    if (v.tank && (!Array.isArray(v.tank.compartments) || v.tank.compartments.some((c) => typeof c?.id !== 'string' || !isNum(c.fromX) || !isNum(c.toX) || !isNum(c.capacityL)))) {
+      throw new Error(`Vehicle "${v.name}" has an invalid tank.`);
+    }
   }
-  for (const pl of Object.values(plan.placements)) {
+  const vehicleById = new Map(plan.vehicles.map((v) => [v.id, v]));
+  for (const [unitId, pl] of Object.entries(plan.placements)) {
     if (!pl || !vehicleIds.has(pl.vehicleId) || !pl.pos || !isNum(pl.pos.x)) throw new Error('Plan file has an invalid placement.');
+    // A fill whose compartment no longer exists (vehicle edited or swapped) goes back to Unplaced.
+    if (pl.compartmentId !== undefined && !vehicleById.get(pl.vehicleId)?.tank?.compartments.some((c) => c.id === pl.compartmentId)) delete plan.placements[unitId];
   }
   return plan;
 }

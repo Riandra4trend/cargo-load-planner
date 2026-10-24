@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createEmptyPlan } from '../data/emptyPlan';
-import { createSeedPlan, makeSpec } from '../data/seed';
+import { createSeedPlan, createTankerSeedPlan, makeSpec } from '../data/seed';
 import {
   deleteSavedPlan,
   duplicateSavedPlan,
@@ -113,6 +113,14 @@ describe('persistence', () => {
     expect(() => savePlanAs(createSeedPlan(), 'Too big')).toThrow(StorageFullError);
     expect(listSavedPlans()).toEqual([]);
     expect(() => saveAutosave(createSeedPlan())).toThrow(/storage is full/);
+  });
+
+  it('keeps tanks, liquid contents and compartment placements through autosave and saved plans', () => {
+    const plan = createTankerSeedPlan();
+    saveAutosave(plan);
+    expect(loadAutosave()).toEqual(plan);
+    const info = savePlanAs(plan, 'Fuel run');
+    expect(loadSavedPlan(info.id)).toEqual({ ...plan, id: info.id, name: 'Fuel run' });
   });
 
   it('persists user templates only', () => {

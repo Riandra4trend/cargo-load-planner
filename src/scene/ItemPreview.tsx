@@ -3,14 +3,18 @@ import { Canvas, useThree } from '@react-three/fiber';
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { LineBasicMaterial, SphereGeometry, Vector3 } from 'three';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
+import { isBulkLiquid } from '../domain/geometry';
+import { liquidColor, maxFillPct } from '../domain/liquids';
 import type { ItemSpec } from '../domain/types';
-import { formatLength } from '../domain/units';
+import { formatLength, formatLiquidDensity, formatLitres, formatMass } from '../domain/units';
 import { useUnitSystem } from '../state/hooks';
 import { toThree, vecToThree } from './coords';
 import { LabelContext, LabelLayer, LabelProjector, LabelStore, SceneLabel } from './labels';
 import { Lighting } from './Lighting';
 import { COG_OVERLAY, LINE_MATERIALS, MATERIALS } from './materials';
 import { CLines, FloorRect } from './prims';
+import { LiquidBody } from './TankLayer';
+import { TANK_MATERIALS, X_BAND, X_CYLINDER } from './TankModel';
 import { UnitMesh } from './UnitMesh';
 
 const FOV = 32;
@@ -27,14 +31,61 @@ export function ItemPreview({ spec, className = '' }: { spec: ItemSpec; classNam
   return (
     <div className={`relative overflow-hidden rounded-card border border-line bg-canvas ${className}`} aria-label={`3D preview of ${spec.name}`}>
       <LabelContext.Provider value={labels}>
-        <Canvas shadows="percentage" frameloop="demand" dpr={[1, 2]} camera={{ fov: FOV, near: 0.01, far: 200, position: [3, 2, 3] }}>
+        <Canvas
+          shadows="percentage"
+          frameloop="demand"
+          dpr={[1, 2]}
+          camera={{ fov: FOV, near: 0.01, far: 200, position: [3, 2, 3] }}
+          onCreated={({ gl }) => {
+            gl.localClippingEnabled = true;
+          }}
+        >
           <color attach="background" args={['#f4f4f1']} />
-          <PreviewContent spec={spec} />
+          {isBulkLiquid(spec) ? <BulkPreview spec={spec} /> : <PreviewContent spec={spec} />}
           <LabelProjector store={labels} />
         </Canvas>
         <LabelLayer store={labels} />
       </LabelContext.Provider>
     </div>
+  );
+}
+
+/** Section of a tank compartment, length × width × height (m), shown for bulk liquid fills. */
+const SECTION = { l: 1.6, w: 2.4, h: 1.8 };
+
+/** Bulk fill: a short tank section filled to the liquid's safe maximum, with volume, weight and density. */
+function BulkPreview({ spec }: { spec: ItemSpec }) {
+  const units = useUnitSystem();
+  const camera = useThree((s) => s.camera);
+  const invalidate = useThree((s) => s.invalidate);
+  const controls = useRef<OrbitControlsImpl>(null);
+  const { l, w, h } = SECTION;
+  const liquid = spec.liquid;
+  useLayoutEffect(() => {
+    const target = vecToThree({ x: l / 2, y: w / 2, z: h / 2 });
+    camera.position.copy(target).addScaledVector(VIEW_DIR, (Math.hypot(l, w, h) / 2 / Math.sin(((FOV / 2) * Math.PI) / 180)) * 1.1);
+    camera.lookAt(target);
+    controls.current?.target.copy(target);
+    controls.current?.update();
+    invalidate();
+  }, [camera, invalidate, l, w, h]);
+  return (
+    <>
+      <Lighting centre={toThree(l / 2, w / 2, 0)} radius={3} sunIntensity={2} />
+      <FloorRect minX={-0.6} maxX={l + 0.6} minY={-0.4} maxY={w + 0.4} z={-0.002} material={MATERIALS.ground} />
+      <mesh geometry={X_CYLINDER} material={TANK_MATERIALS.shell} position={toThree(l / 2, w / 2, h / 2)} scale={[l, h, w]} />
+      {[0, l].map((x) => (
+        <mesh key={x} geometry={X_BAND} material={TANK_MATERIALS.ring} position={toThree(x, w / 2, h / 2)} scale={[0.05, h * 1.015, w * 1.015]} />
+      ))}
+      <LiquidBody fromX={0.02} toX={l - 0.02} width={w} height={h} frontHead={0} rearHead={0} color={liquidColor(liquid?.liquidId ?? 'custom')} fill={maxFillPct(liquid?.liquidId ?? 'custom') / 100} />
+      <SceneLabel position={toThree(l / 2, w / 2, h + 0.2)}>
+        <div className="num w-max -translate-x-1/2 -translate-y-full rounded bg-card/90 px-1.5 py-0.5 text-center font-mono text-[10px] font-semibold text-ink-soft shadow-sm">
+          {formatLitres(liquid?.volumeL ?? 0, units, (liquid?.volumeL ?? 0) >= 100 ? 0 : 1)} · {formatMass(spec.weightKg, units)}
+          {liquid && <div className="font-normal text-muted">{formatLiquidDensity(liquid.densityKgPerL, units)}</div>}
+        </div>
+      </SceneLabel>
+      <OrbitControls ref={controls} enablePan={false} enableDamping={false} minDistance={1.5} maxDistance={14} />
+    </>
   );
 }
 

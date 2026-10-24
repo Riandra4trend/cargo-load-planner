@@ -1,14 +1,14 @@
 import { TEMP_COLORS } from '../../domain/colors';
 import { sliderPositions, vehicleTareKg } from '../../domain/presets';
 import type { CurvePoint, UnitSystem, Vehicle } from '../../domain/types';
-import { formatLength, formatMass } from '../../domain/units';
+import { formatLength, formatLitres, formatMass } from '../../domain/units';
 import { axleGroups, axlePositions } from '../../physics';
 
 /** viewBox width; matches the editor's preview column so 10–11 px text stays legible. */
 const W = 440;
 const WHEEL_R = 0.5;
 
-/** Side-view schematic of a vehicle definition: cab, cargo box with temperature zones, axles, kingpin and slider holes. */
+/** Side-view schematic of a vehicle definition: cab, cargo box with temperature zones (or tank compartments), axles, kingpin and slider holes. */
 export function VehicleSchematic({ vehicle: v, sys, peakX }: { vehicle: Vehicle; sys: UnitSystem; peakX?: number }) {
   const s = v.statics;
   const L = v.cargo.l;
@@ -62,23 +62,58 @@ export function VehicleSchematic({ vehicle: v, sys, peakX }: { vehicle: Vehicle;
       {/* cab */}
       <rect x={X(cabFront)} y={Y(cabTop)} width={Math.max(0, X(cabRear) - X(cabFront))} height={(cabTop - chassisY + 0.1) * scale} rx={6} fill="var(--color-canvas)" stroke="var(--color-ink-soft)" strokeWidth={1.2} />
       <rect x={X(cabFront + 0.15)} y={Y(cabTop - 0.2)} width={Math.max(0, 0.7 * scale)} height={0.6 * scale} rx={3} fill="var(--color-info-soft)" stroke="var(--color-line-strong)" />
-      {/* cargo box with temperature zones */}
-      {v.zones.map((z) => (
-        <rect key={z.id} x={X(frame(z.fromX))} y={Y(top)} width={Math.max(0, (z.toX - z.fromX) * scale)} height={v.cargo.h * scale} fill={TEMP_COLORS[z.temp]} opacity={v.tempControlled ? 0.22 : 0.08} />
-      ))}
-      {v.zones.slice(0, -1).map((z) => (
-        <line key={z.id} x1={X(frame(z.toX))} x2={X(frame(z.toX))} y1={Y(top)} y2={Y(deck)} stroke="var(--color-info)" strokeWidth={2} />
-      ))}
-      <rect
-        x={X(frame(0))}
-        y={Y(top)}
-        width={L * scale}
-        height={v.cargo.h * scale}
-        fill="none"
-        stroke="var(--color-ink)"
-        strokeWidth={1.5}
-        strokeDasharray={v.walls ? undefined : '6 4'}
-      />
+      {v.tank ? (
+        <g>
+          {/* tank barrel with compartments */}
+          <rect
+            x={X(frame(0))}
+            y={Y(top)}
+            width={L * scale}
+            height={v.cargo.h * scale}
+            rx={v.tank.pressurised ? (v.cargo.h * scale) / 2 : Math.min((v.cargo.h * scale) / 3, 16)}
+            fill="var(--color-canvas)"
+            stroke="var(--color-ink)"
+            strokeWidth={v.tank.insulated ? 3 : 1.5}
+          />
+          {v.tank.compartments.map((c, i) => {
+            const cx = (X(frame(c.fromX)) + X(frame(c.toX))) / 2;
+            const wide = (c.toX - c.fromX) * scale > 44;
+            return (
+              <g key={c.id}>
+                {i > 0 && <line x1={X(frame(c.fromX))} x2={X(frame(c.fromX))} y1={Y(top) + 2} y2={Y(deck) - 2} stroke="var(--color-info)" strokeWidth={2} />}
+                <text x={cx} y={Y(deck + v.cargo.h / 2) - (wide ? 2 : -4)} textAnchor="middle" fontSize={10.5} fontWeight={600} fill="var(--color-ink-soft)">
+                  {c.label}
+                </text>
+                {wide && (
+                  <text x={cx} y={Y(deck + v.cargo.h / 2) + 11} textAnchor="middle" fontSize={9.5} fill="var(--color-muted)" className="num">
+                    {formatLitres(c.capacityL, sys, 0)}
+                  </text>
+                )}
+              </g>
+            );
+          })}
+        </g>
+      ) : (
+        <g>
+          {/* cargo box with temperature zones */}
+          {v.zones.map((z) => (
+            <rect key={z.id} x={X(frame(z.fromX))} y={Y(top)} width={Math.max(0, (z.toX - z.fromX) * scale)} height={v.cargo.h * scale} fill={TEMP_COLORS[z.temp]} opacity={v.tempControlled ? 0.22 : 0.08} />
+          ))}
+          {v.zones.slice(0, -1).map((z) => (
+            <line key={z.id} x1={X(frame(z.toX))} x2={X(frame(z.toX))} y1={Y(top)} y2={Y(deck)} stroke="var(--color-info)" strokeWidth={2} />
+          ))}
+          <rect
+            x={X(frame(0))}
+            y={Y(top)}
+            width={L * scale}
+            height={v.cargo.h * scale}
+            fill="none"
+            stroke="var(--color-ink)"
+            strokeWidth={1.5}
+            strokeDasharray={v.walls ? undefined : '6 4'}
+          />
+        </g>
+      )}
       {v.tempControlled && <rect x={X(frame(0)) - 0.35 * scale} y={Y(top - 0.2)} width={0.35 * scale} height={0.9 * scale} rx={2} fill="var(--color-info)" opacity={0.75} />}
       {/* best COG */}
       {peakX !== undefined && (

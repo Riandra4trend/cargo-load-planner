@@ -1,7 +1,9 @@
 import Papa from 'papaparse';
+import { PACKAGING_PRESETS } from '../data/packaging';
+import { CUSTOM_LIQUID_ID, LIQUIDS, maxFillPct, type LiquidDef } from '../domain/liquids';
 import { HAZMAT_CLASSES } from '../domain/settings';
-import type { CargoLine, Hazmat, ItemSpec, PackagingKind, PackingGroup, Plan, Priority, RotationRule, Shape, Stop, TempClass } from '../domain/types';
-import { formatDensity, toKg, toMetres, type LengthUnit, type WeightUnit } from '../domain/units';
+import type { CargoLine, Dims, Hazmat, ItemSpec, LiquidContents, PackagingKind, PackingGroup, Plan, Priority, RotationRule, Shape, Stop, TempClass } from '../domain/types';
+import { formatDensity, formatLiquidDensity, formatLitres, formatWeight, L_PER_US_GAL, lbToKg, toKg, toMetres, type LengthUnit, type WeightUnit } from '../domain/units';
 
 /**
  * Bulk item import from CSV / TSV text (files or spreadsheet paste). Pure: parse -> auto-map columns ->
@@ -66,15 +68,20 @@ export type ImportField =
   | 'packingGroup'
   | 'category'
   | 'origin'
-  | 'notes';
+  | 'notes'
+  | 'liquid'
+  | 'volume'
+  | 'density'
+  | 'containerCapacity';
 
-export type FieldKind = 'text' | 'length' | 'weight' | 'integer' | 'boolean' | 'choice';
+export type FieldKind = 'text' | 'length' | 'weight' | 'volume' | 'density' | 'integer' | 'boolean' | 'choice';
 
 export interface FieldDef {
   field: ImportField;
   label: string;
   kind: FieldKind;
-  group: 'Item' | 'Delivery' | 'Handling' | 'Hazmat' | 'Details';
+  group: 'Item' | 'Delivery' | 'Handling' | 'Liquid' | 'Hazmat' | 'Details';
+  /** Required unless a liquid column is mapped (liquid rows derive size and weight). */
   required?: boolean;
 }
 
@@ -99,7 +106,7 @@ export const IMPORT_FIELDS: FieldDef[] = [
   { field: 'keepUpright', label: 'Keep upright', kind: 'boolean', group: 'Handling' },
   { field: 'rotation', label: 'Rotation', kind: 'choice', group: 'Handling' },
   { field: 'shape', label: 'Shape', kind: 'choice', group: 'Handling' },
-  { field: 'packaging', label: 'Packaging', kind: 'choice', group: 'Handling' },
+  { field: 'packaging', label: 'Packaging / container', kind: 'choice', group: 'Handling' },
   { field: 'palletHeight', label: 'Pallet height', kind: 'length', group: 'Handling' },
   { field: 'cogX', label: 'COG offset (length)', kind: 'length', group: 'Handling' },
   { field: 'cogY', label: 'COG offset (width)', kind: 'length', group: 'Handling' },
@@ -110,7 +117,17 @@ export const IMPORT_FIELDS: FieldDef[] = [
   { field: 'category', label: 'Category', kind: 'text', group: 'Details' },
   { field: 'origin', label: 'Origin', kind: 'text', group: 'Details' },
   { field: 'notes', label: 'Notes', kind: 'text', group: 'Details' },
+  { field: 'liquid', label: 'Liquid (name or id)', kind: 'text', group: 'Liquid' },
+  { field: 'volume', label: 'Volume per unit', kind: 'volume', group: 'Liquid' },
+  { field: 'density', label: 'Density', kind: 'density', group: 'Liquid' },
+  { field: 'containerCapacity', label: 'Container capacity (other container)', kind: 'volume', group: 'Liquid' },
 ];
+
+/** Fields that still need a column. Liquid rows derive size from the container and weight from volume × density. */
+export function missingRequiredFields(mapping: FieldMapping): FieldDef[] {
+  if (mapping.liquid !== undefined) return [];
+  return IMPORT_FIELDS.filter((f) => f.required && mapping[f.field] === undefined);
+}
 
 /** Normalised header keys (lowercase, alphanumerics only, unit suffix removed) per field. */
 const ALIASES: Record<ImportField, string[]> = {
@@ -134,7 +151,7 @@ const ALIASES: Record<ImportField, string[]> = {
   keepUpright: ['keepupright', 'upright', 'thissideup', 'thiswayup'],
   rotation: ['rotation', 'rotate', 'rotations', 'allowedrotation', 'allowedrotations', 'orientation'],
   shape: ['shape', 'form'],
-  packaging: ['packaging', 'package', 'packagetype', 'packagingtype', 'packtype', 'pallettype', 'pallet', 'handlingunit'],
+  packaging: ['packaging', 'package', 'packagetype', 'packagingtype', 'packtype', 'pallettype', 'pallet', 'handlingunit', 'container', 'containertype'],
   palletHeight: ['palletheight', 'palleth'],
   cogX: ['cogoffsetx', 'cogx', 'cogxoffset', 'cogoffsetl', 'coglength'],
   cogY: ['cogoffsety', 'cogy', 'cogyoffset', 'cogoffsetw', 'cogwidth'],
@@ -145,6 +162,10 @@ const ALIASES: Record<ImportField, string[]> = {
   category: ['category', 'cat', 'type', 'producttype', 'commodity'],
   origin: ['origin', 'countryoforigin', 'coo', 'country', 'madein'],
   notes: ['notes', 'note', 'remarks', 'remark', 'comment', 'comments', 'instructions'],
+  liquid: ['liquid', 'liquidtype', 'liquidname', 'liquidid', 'fluid', 'fluidtype'],
+  volume: ['volume', 'vol', 'volumeperunit', 'fillvolume', 'fill', 'netvolume', 'volumeusgal'],
+  density: ['density', 'sg', 'specificgravity', 'densitykgl', 'densitykgperl', 'densitylbgal', 'densitylbpergal', 'densitykgm3', 'densitykgperm3'],
+  containerCapacity: ['containercapacity', 'containercapacityl', 'capacity', 'containervolume', 'brimcapacity'],
 };
 
 const FIELD_BY_ALIAS = new Map<string, ImportField>(
@@ -153,6 +174,10 @@ const FIELD_BY_ALIAS = new Map<string, ImportField>(
 
 /** Fallback for unmatched headers: substring -> field, tried in order (e.g. "Gross weight per pallet"). */
 const CONTAINS: [string, ImportField][] = [
+  ['density', 'density'],
+  ['containercapacity', 'containerCapacity'],
+  ['volume', 'volume'],
+  ['liquid', 'liquid'],
   ['palletheight', 'palletHeight'],
   ['loadontop', 'maxLoadOnTop'],
   ['weight', 'weight'],
@@ -171,7 +196,12 @@ const CONTAINS: [string, ImportField][] = [
   ['name', 'name'],
 ];
 
-type UnitToken = { kind: 'length'; unit: LengthUnit } | { kind: 'weight'; unit: WeightUnit };
+export type VolumeUnit = 'L' | 'gal';
+export type DensityUnit = 'kg/L' | 'lb/gal' | 'kg/m3';
+export const VOLUME_UNITS: VolumeUnit[] = ['L', 'gal'];
+export const DENSITY_UNITS: DensityUnit[] = ['kg/L', 'lb/gal', 'kg/m3'];
+
+type UnitToken = { kind: 'length'; unit: LengthUnit } | { kind: 'weight'; unit: WeightUnit } | { kind: 'volume'; unit: VolumeUnit };
 
 const UNIT_TOKENS: Record<string, UnitToken> = {};
 const addTokens = (token: UnitToken, words: string[]) => words.forEach((w) => (UNIT_TOKENS[w] = token));
@@ -183,6 +213,8 @@ addTokens({ kind: 'length', unit: 'ft' }, ['ft', 'foot', 'feet']);
 addTokens({ kind: 'weight', unit: 'kg' }, ['kg', 'kgs', 'kilo', 'kilos', 'kilogram', 'kilograms']);
 addTokens({ kind: 'weight', unit: 't' }, ['t', 'ton', 'tons', 'tonne', 'tonnes']);
 addTokens({ kind: 'weight', unit: 'lb' }, ['lb', 'lbs', 'pound', 'pounds']);
+addTokens({ kind: 'volume', unit: 'L' }, ['l', 'lt', 'ltr', 'ltrs', 'litre', 'litres', 'liter', 'liters']);
+addTokens({ kind: 'volume', unit: 'gal' }, ['gal', 'gals', 'gallon', 'gallons', 'usgal']);
 
 /** Header -> normalised key and the unit named in it ("Length (in)", "weight_kg", "Height [mm]"). */
 function analyseHeader(header: string): { key: string; unit?: UnitToken } {
@@ -203,10 +235,24 @@ export interface AutoMapResult {
   lengthUnit?: LengthUnit;
   /** Unit named in the weight headers, if any. */
   weightUnit?: WeightUnit;
+  /** Unit named in the volume header ("Volume (gal)", "volume_l", "Litres"), if any. */
+  volumeUnit?: VolumeUnit;
+  /** Unit named in the density header ("Density (lb/gal)"), if any. */
+  densityUnit?: DensityUnit;
 }
 
 const LENGTH_FIELDS: ImportField[] = ['length', 'width', 'height', 'palletHeight', 'cogX', 'cogY', 'cogZ'];
 const WEIGHT_FIELDS: ImportField[] = ['weight', 'maxLoadOnTop'];
+const VOLUME_FIELDS: ImportField[] = ['volume', 'containerCapacity'];
+
+/** Density unit written in a header or cell: "lb/gal", "kg/m3", "kg/L". */
+function densityUnitIn(text: string): DensityUnit | undefined {
+  const t = text.toLowerCase().replace(/\s+/g, '');
+  if (/lbs?(\/|per)(us)?gal/.test(t)) return 'lb/gal';
+  if (/kg(\/|per)m(3|³)/.test(t)) return 'kg/m3';
+  if (/(kg(\/|per)l|g\/ml|g\/cm(3|³))/.test(t)) return 'kg/L';
+  return undefined;
+}
 
 /** Maps headers to fields by case/space-insensitive aliases; detects unit suffixes. */
 export function autoMapColumns(headers: string[]): AutoMapResult {
@@ -219,7 +265,7 @@ export function autoMapColumns(headers: string[]): AutoMapResult {
     used.add(i);
   };
   analysed.forEach(({ key, unit }, i) => {
-    const field = FIELD_BY_ALIAS.get(key) ?? (key === '' && unit?.kind === 'weight' ? 'weight' : undefined);
+    const field = FIELD_BY_ALIAS.get(key) ?? (key === '' && unit?.kind === 'weight' ? 'weight' : key === '' && unit?.kind === 'volume' ? 'volume' : undefined);
     if (field) assign(field, i);
   });
   analysed.forEach(({ key }, i) => {
@@ -235,7 +281,16 @@ export function autoMapColumns(headers: string[]): AutoMapResult {
     }
     return undefined;
   };
-  return { mapping, lengthUnit: unitOf(LENGTH_FIELDS, 'length') as LengthUnit | undefined, weightUnit: unitOf(WEIGHT_FIELDS, 'weight') as WeightUnit | undefined };
+  const volumeUnit =
+    (unitOf(VOLUME_FIELDS, 'volume') as VolumeUnit | undefined) ??
+    (mapping.volume !== undefined && /gal/i.test(headers[mapping.volume]) ? 'gal' : undefined);
+  return {
+    mapping,
+    lengthUnit: unitOf(LENGTH_FIELDS, 'length') as LengthUnit | undefined,
+    weightUnit: unitOf(WEIGHT_FIELDS, 'weight') as WeightUnit | undefined,
+    volumeUnit,
+    densityUnit: mapping.density === undefined ? undefined : densityUnitIn(headers[mapping.density]),
+  };
 }
 
 // --- cell parsers -------------------------------------------------------------
@@ -254,8 +309,11 @@ export function parseNumberCell(text: string): number {
   return /^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i.test(t) ? Number(t) : Number.NaN;
 }
 
-/** Length or weight cell in SI; a unit written in the cell ("48 in", "1200mm", "500 lb") overrides the column unit. */
-function parseMeasure(text: string, kind: 'length' | 'weight', unit: LengthUnit | WeightUnit): number | string {
+type MeasureKind = UnitToken['kind'];
+type MeasureUnit = LengthUnit | WeightUnit | VolumeUnit;
+
+/** Length, weight or volume cell in SI (m, kg, L); a unit written in the cell ("48 in", "1200mm", "500 lb", "264 gal") overrides the column unit. */
+function parseMeasure(text: string, kind: MeasureKind, unit: MeasureUnit): number | string {
   let value = text.trim();
   let u = unit;
   const m = /^(.*?\d)\s*([a-z]+|")\.?$/i.exec(value);
@@ -268,7 +326,36 @@ function parseMeasure(text: string, kind: 'length' | 'weight', unit: LengthUnit 
   }
   const n = parseNumberCell(value);
   if (!Number.isFinite(n)) return 'is not a number';
+  if (kind === 'volume') return u === 'gal' ? n * L_PER_US_GAL : n;
   return kind === 'length' ? toMetres(n, u as LengthUnit) : toKg(n, u as WeightUnit);
+}
+
+/** Density cell in kg/L; a unit written in the cell ("7.0 lb/gal", "840 kg/m3") overrides the column unit. */
+function parseDensity(text: string, unit: DensityUnit): number | string {
+  const m = /^([-+]?[\d.,\s]*\d)\s*(.*)$/.exec(text.trim());
+  if (!m) return 'is not a number';
+  const n = parseNumberCell(m[1]);
+  if (!Number.isFinite(n)) return 'is not a number';
+  const written = m[2].trim();
+  const u = written ? densityUnitIn(written) : unit;
+  if (!u) return `unknown density unit "${written}"`;
+  if (u === 'lb/gal') return lbToKg(n) / L_PER_US_GAL;
+  return u === 'kg/m3' ? n / 1000 : n;
+}
+
+const liquidKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+/** Lookup keys per library liquid: id, full name, name without its bracketed part, and each bracketed / slash-separated alias. */
+const LIQUID_BY_KEY = new Map<string, LiquidDef>();
+for (const def of LIQUIDS) {
+  const bracket = /\(([^)]*)\)/.exec(def.name)?.[1] ?? '';
+  const keys = [def.id, def.name, def.name.replace(/\([^)]*\)/, ''), ...def.name.split('/'), ...bracket.split(/[,/]/)];
+  for (const k of keys.map(liquidKey)) if (k && !LIQUID_BY_KEY.has(k)) LIQUID_BY_KEY.set(k, def);
+}
+
+/** Library liquid by id or name, case-insensitive ("diesel", "Diesel (solar)", "solar", "crude oil", "CPO"). */
+export function findLiquid(text: string): LiquidDef | undefined {
+  return LIQUID_BY_KEY.get(liquidKey(text));
 }
 
 const BOOL_WORDS: Record<string, boolean> = {
@@ -320,10 +407,12 @@ const PACKAGING: [RegExp, PackagingKind][] = [
   [/^(us-pallet|us pallet|gma|gma pallet|48x40|us)$/, 'us-pallet'],
   [/^(carton|box|cardboard|case)$/, 'carton'],
   [/^(crate|wooden crate|skid)$/, 'crate'],
-  [/^(drum|barrel|200 l drum|200l drum)$/, 'drum'],
-  [/^(ibc|tote|ibc tote)$/, 'ibc'],
+  [/^(drum|barrel|steel drum|200 l drum|200l drum|200 l|200l)$/, 'drum'],
+  [/^(ibc|tote|ibc tote|ibc tote 1000 l|1000 l ibc)$/, 'ibc'],
+  [/^(jerrycan|jerry can|jerry-can|jerrycan 20 l|can|20 l can)$/, 'jerrycan'],
+  [/^(bulk-liquid|bulk|bulk liquid|tanker|tank|tanker compartment|compartment)$/, 'bulk-liquid'],
   [/^(long-goods|long goods|long|bundle|profiles)$/, 'long-goods'],
-  [/^(custom|other|none|loose)$/, 'custom'],
+  [/^(custom|other|other container|none|loose)$/, 'custom'],
 ];
 const PRIORITIES: [RegExp, Priority][] = [
   [/^(urgent|high|rush|express|asap|yes|y|1|true|x)$/, 'urgent'],
@@ -352,6 +441,8 @@ function parsePackingGroup(text: string): PackingGroup | null {
 export interface ImportUnits {
   lengthUnit: LengthUnit;
   weightUnit: WeightUnit;
+  volumeUnit: VolumeUnit;
+  densityUnit: DensityUnit;
 }
 
 export interface ImportReportEntry {
@@ -381,6 +472,11 @@ export interface ImportResult {
 const NEW_STOP_PREFIX = 'new-stop:';
 const MAX_QUANTITY = 1000;
 const LARGE_QUANTITY = 300;
+/** Nominal box of a bulk fill (ignored by packing; matches makeBulkLiquidSpec). */
+const BULK_DIMS: Dims = { l: 1, w: 1, h: 1 };
+/** Plausible liquid densities, kg/L (LPG 0.54 … sulfuric acid 1.84, with margin). */
+const MIN_DENSITY = 0.3;
+const MAX_DENSITY = 3;
 
 /** Converts parsed rows into cargo lines (SI units) with validation; rows with errors are skipped. */
 export function rowsToLines(rows: string[][], mapping: FieldMapping, units: ImportUnits, plan: Plan): ImportResult {
@@ -393,9 +489,7 @@ export function rowsToLines(rows: string[][], mapping: FieldMapping, units: Impo
   const customerName = (s: Stop) => plan.customers.find((c) => c.id === s.customerId)?.name ?? '';
   let skipped = 0;
 
-  for (const f of IMPORT_FIELDS) {
-    if (f.required && mapping[f.field] === undefined) report.push({ row: 0, level: 'error', message: `No column is mapped to ${f.label.toLowerCase()}.` });
-  }
+  for (const f of missingRequiredFields(mapping)) report.push({ row: 0, level: 'error', message: `No column is mapped to ${f.label.toLowerCase()}.` });
   if (mapping.stop === undefined && mapping.customer === undefined && stops[0]) {
     report.push({ row: 0, level: 'info', message: `No stop column: items go to stop ${stops[0].sequence} (${stops[0].name}).` });
   }
@@ -419,13 +513,13 @@ export function rowsToLines(rows: string[][], mapping: FieldMapping, units: Impo
     };
     const label = (f: ImportField) => IMPORT_FIELDS.find((d) => d.field === f)!.label;
 
-    const measure = (f: ImportField, kind: 'length' | 'weight', opts: { required?: boolean; positive?: boolean; signed?: boolean }): number | undefined => {
+    const measure = (f: ImportField, kind: MeasureKind, opts: { required?: boolean; positive?: boolean; signed?: boolean }): number | undefined => {
       const text = cell(f);
       if (text === '') {
         if (opts.required) errors.push(`${label(f)} is missing`);
         return undefined;
       }
-      const v = parseMeasure(text, kind, kind === 'length' ? units.lengthUnit : units.weightUnit);
+      const v = parseMeasure(text, kind, kind === 'length' ? units.lengthUnit : kind === 'weight' ? units.weightUnit : units.volumeUnit);
       if (typeof v === 'string') {
         errors.push(`${label(f)} "${text}" ${v}`);
         return undefined;
@@ -460,18 +554,74 @@ export function rowsToLines(rows: string[][], mapping: FieldMapping, units: Impo
       return v ?? fallback;
     };
 
+    // packaging and liquid contents decide which columns a row needs
+    const liquidText = cell('liquid');
+    const def = liquidText ? findLiquid(liquidText) : undefined;
+    const dimsGiven = cell('length') !== '' || cell('width') !== '' || cell('height') !== '';
+    const packaging = choice('packaging', (t) => parseChoice(t, PACKAGING), liquidText && !dimsGiven ? 'bulk-liquid' : 'custom');
+    const preset = PACKAGING_PRESETS[packaging];
+    const bulk = packaging === 'bulk-liquid';
+    const isLiquid = liquidText !== '' || bulk;
+
+    let liquid: LiquidContents | undefined;
+    if (isLiquid) {
+      if (!liquidText) errors.push('A bulk liquid row needs a liquid, e.g. diesel or water');
+      let volumeL = measure('volume', 'volume', { positive: true });
+      if (cell('volume') === '') {
+        if (!bulk && preset.nominalL) volumeL = preset.nominalL;
+        else errors.push('Volume is missing');
+      }
+      const densityText = cell('density');
+      let densityKgPerL = def?.densityKgPerL;
+      if (densityText) {
+        const d = parseDensity(densityText, units.densityUnit);
+        if (typeof d === 'string') errors.push(`Density "${densityText}" ${d}`);
+        else if (d < MIN_DENSITY || d > MAX_DENSITY) errors.push(`Density ${formatLiquidDensity(d, sys)} is implausible for a liquid: check the density unit`);
+        else densityKgPerL = d;
+      } else if (liquidText && !def) errors.push(`"${liquidText}" is not in the liquid library: add a density column`);
+      let containerCapacityL: number | undefined;
+      if (cell('containerCapacity') !== '') {
+        if (bulk) warnings.push('Container capacity is ignored for bulk liquids');
+        else if (preset.capacityL) warnings.push(`Container capacity is ignored: a ${preset.label} holds ${formatLitres(preset.capacityL, sys, 0)}`);
+        else containerCapacityL = measure('containerCapacity', 'volume', { positive: true });
+      }
+      if (liquidText && volumeL !== undefined && densityKgPerL !== undefined) {
+        liquid = { liquidId: def?.id ?? CUSTOM_LIQUID_ID, name: def?.name ?? liquidText, densityKgPerL, volumeL, ...(containerCapacityL ? { containerCapacityL } : {}) };
+        const brim = bulk ? undefined : (preset.capacityL ?? containerCapacityL);
+        const pct = maxFillPct(liquid.liquidId);
+        if (brim && volumeL > (brim * pct) / 100 + 1e-6) {
+          warnings.push(`Overfilled: ${formatLitres(volumeL, sys, 0)} in a ${formatLitres(brim, sys, 0)} container (max ${formatLitres((brim * pct) / 100, sys, 0)} at ${pct} %)`);
+        }
+      }
+    }
+
     // identity
-    let name = cell('name');
+    let name = cell('name') || def?.name || liquidText;
     if (!name) {
       name = cell('sku') || `Item (row ${rowNo})`;
       warnings.push(`No name; using "${name}"`);
     }
 
-    // physical
-    const l = measure('length', 'length', { required: true, positive: true });
-    const w = measure('width', 'length', { required: true, positive: true });
-    const h = measure('height', 'length', { required: true, positive: true });
-    const weightKg = measure('weight', 'weight', { required: true, positive: true });
+    // physical: liquid rows fall back to the container's size and derive the weight from volume × density
+    let l = measure('length', 'length', { required: !isLiquid, positive: true });
+    let w = measure('width', 'length', { required: !isLiquid, positive: true });
+    let h = measure('height', 'length', { required: !isLiquid, positive: true });
+    if (isLiquid && (l === undefined || w === undefined || h === undefined)) {
+      const fallback = bulk ? BULK_DIMS : preset.dims;
+      if (fallback) {
+        l ??= fallback.l;
+        w ??= fallback.w;
+        h ??= fallback.h;
+      } else errors.push('Length, width and height are missing, and this container has no standard size');
+    }
+    let weightKg = measure('weight', 'weight', { required: !isLiquid, positive: true });
+    if (liquid) {
+      const computed = liquid.volumeL * liquid.densityKgPerL + (bulk ? 0 : preset.tareKg);
+      if (cell('weight') === '') weightKg = computed;
+      else if (weightKg !== undefined && Math.abs(weightKg - computed) > 0.1 * computed) {
+        warnings.push(`Weight ${formatWeight(weightKg, sys)} differs from volume × density${bulk ? '' : ' + container'} (${formatWeight(computed, sys)})`);
+      }
+    }
     const quantity = integer('quantity', 1, 1);
     if (quantity > MAX_QUANTITY) errors.push(`Quantity ${quantity} is above the import limit of ${MAX_QUANTITY} units per row`);
     else if (quantity > LARGE_QUANTITY) warnings.push(`Large quantity (${quantity} units)`);
@@ -492,11 +642,10 @@ export function rowsToLines(rows: string[][], mapping: FieldMapping, units: Impo
     const maxStackLayers = integer('layers', stackable ? 2 : 1, 1);
     const fragile = bool('fragile', false);
     const keepUpright = bool('keepUpright', true);
-    const rotation = choice('rotation', (t) => parseChoice(t, ROTATIONS), 'yaw');
-    const shape = choice('shape', (t) => parseChoice(t, SHAPES), 'box');
-    const packaging = choice('packaging', (t) => parseChoice(t, PACKAGING), 'custom');
-    const temp = choice('temp', parseTempCell, 'ambient');
-    const isFood = bool('food', false);
+    const rotation = choice('rotation', (t) => parseChoice(t, ROTATIONS), bulk ? 'none' : 'yaw');
+    const shape = choice('shape', (t) => parseChoice(t, SHAPES), preset.shape);
+    const temp = choice('temp', parseTempCell, def?.temp ?? 'ambient');
+    const isFood = bool('food', def?.isFood ?? false);
     const priority = choice('priority', (t) => parseChoice(t, PRIORITIES), 'normal');
 
     // hazmat
@@ -519,7 +668,7 @@ export function rowsToLines(rows: string[][], mapping: FieldMapping, units: Impo
           else warnings.push(`Packing group "${pgText}" not recognised (I, II or III); left empty`);
         }
       }
-    }
+    } else if (def?.hazmat) hazmat = { ...def.hazmat };
 
     if (errors.length || l === undefined || w === undefined || h === undefined || weightKg === undefined) {
       skipped++;
@@ -560,8 +709,10 @@ export function rowsToLines(rows: string[][], mapping: FieldMapping, units: Impo
       stopId = newStopKey('Stop 1', 'Customer 1');
     }
 
-    const density = weightKg / (l * w * h);
-    if (density < 10 || density > 8000) warnings.push(`Implausible density ${formatDensity(density, sys)}: check units`);
+    if (!bulk) {
+      const density = weightKg / (l * w * h);
+      if (density < 10 || density > 8000) warnings.push(`Implausible density ${formatDensity(density, sys)}: check units`);
+    }
     if (fragile && stackable) warnings.push('Fragile and stackable: nothing will be stacked on it');
     for (const message of warnings) report.push({ row: rowNo, level: 'warning', message });
 
@@ -570,7 +721,7 @@ export function rowsToLines(rows: string[][], mapping: FieldMapping, units: Impo
     const spec: ItemSpec = {
       name,
       sku: cell('sku'),
-      category: cell('category'),
+      category: cell('category') || (bulk ? 'Bulk liquid' : ''),
       origin: cell('origin'),
       shape,
       dims: { l, w, h },
@@ -588,6 +739,7 @@ export function rowsToLines(rows: string[][], mapping: FieldMapping, units: Impo
       isFood,
       ...(notes ? { notes } : {}),
       ...(hazmat ? { hazmat } : {}),
+      ...(liquid ? { liquid } : {}),
     };
     lines.push({ spec, quantity, stopId, priority, ...(contents ? { contents } : {}) });
     rowOfLine.push(rowNo);

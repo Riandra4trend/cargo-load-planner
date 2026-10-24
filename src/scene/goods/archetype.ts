@@ -18,6 +18,7 @@ export type GoodsArchetype =
   | 'paper-roll'
   | 'cable-reel'
   | 'ibc'
+  | 'jerrycan'
   | 'bricks'
   | 'furniture'
   | 'carton'
@@ -31,6 +32,7 @@ export function goodsArchetype(spec: ItemSpec): GoodsArchetype {
   const palletized = spec.palletHeight > 0;
   if (spec.shape === 'cylinder-lying') return has(text, /cable|reel|wire|spool|hose/) ? 'cable-reel' : 'paper-roll';
   if (spec.shape === 'cylinder-upright') return has(text, /pail|bucket/) ? 'pails' : 'drum';
+  if (spec.packaging === 'jerrycan' || has(text, /jerry ?can/)) return 'jerrycan';
   if (spec.packaging === 'ibc' || has(text, /\bibc\b|\btote\b/)) return 'ibc';
   if (spec.packaging === 'drum' || has(text, /\bdrums?\b|barrel/)) return 'drum';
   if (spec.packaging === 'long-goods' || has(text, /profile|\bbars?\b|pipe|tube|beam|rebar|girder|rail/)) return 'steel-bundle';

@@ -1,5 +1,5 @@
 import { X } from 'lucide-react';
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { IconButton } from './Button';
 
@@ -14,19 +14,29 @@ export interface ModalProps {
   width?: string;
 }
 
-/** Centered dialog rendered in a portal; closes on Esc and backdrop click. */
+/** Open modals, oldest first: Esc closes only the topmost one when dialogs stack. */
+const openModals: symbol[] = [];
+
+/** Centered dialog rendered in a portal; closes on Esc (topmost dialog only) and backdrop click. */
 export function Modal({ open, title, onClose, children, footer, icon, width = 'max-w-lg' }: ModalProps) {
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
   useEffect(() => {
     if (!open) return;
+    const token = Symbol('modal');
+    openModals.push(token);
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
+      if (e.key === 'Escape' && openModals[openModals.length - 1] === token) {
         e.stopPropagation();
-        onClose();
+        closeRef.current();
       }
     };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      openModals.splice(openModals.indexOf(token), 1);
+    };
+  }, [open]);
 
   if (!open) return null;
   return createPortal(

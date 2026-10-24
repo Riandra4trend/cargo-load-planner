@@ -1,17 +1,33 @@
-import { CircleAlert, Plus, Trash2, TriangleAlert, Truck } from 'lucide-react';
+import { ChevronDown, ChevronUp, CircleAlert, Plus, Trash2, TriangleAlert, Truck } from 'lucide-react';
 import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import { TEMP_LABELS } from '../../domain/colors';
 import { uid } from '../../domain/ids';
 import { createCustomVehicle, createVehicle, sliderPositions, VEHICLE_PRESETS, vehicleTareKg } from '../../domain/presets';
-import type { AccessSide, ArticStatics, AxleGroup, FuelProfile, Id, Region, TempClass, UnitSystem, Vehicle, VehicleKind } from '../../domain/types';
-import { bigLengthUnit, formatLength, formatMass, kgToLb, L_PER_US_GAL, lbToKg, lPer100kmToMpg, M_PER_FT, weightUnit } from '../../domain/units';
+import type { AccessSide, ArticStatics, AxleGroup, FuelProfile, Id, Region, TankCompartment, TankSpec, TempClass, UnitSystem, Vehicle, VehicleKind } from '../../domain/types';
+import { bigLengthUnit, formatLength, formatLitres, formatMass, formatPercent, kgToLb, L_PER_US_GAL, lbToKg, lPer100kmToMpg, M_PER_FT, weightUnit } from '../../domain/units';
 import { curvePeak, loadDistributionCurve } from '../../physics';
 import { useUnitSystem } from '../../state/hooks';
 import { useStore } from '../../state/store';
 import { Button, IconButton } from '../common/Button';
-import { Field, LengthInput, NumberInput, SegmentedControl, Select, TextInput, Toggle, WeightInput } from '../common/fields';
+import { Field, LengthInput, LitresInput, NumberInput, SegmentedControl, Select, TextInput, Toggle, WeightInput } from '../common/fields';
 import { Modal } from '../common/Modal';
-import { addZone, moveBulkhead, removeZone, scaleZones, validateVehicle, withStaticsType } from './vehicleDraft';
+import {
+  addZone,
+  barrelLitres,
+  fitCompartments,
+  isAutoLayout,
+  layoutCompartments,
+  mergeCompartment,
+  moveBulkhead,
+  moveCompartment,
+  moveTankBulkhead,
+  removeZone,
+  scaleZones,
+  splitCompartment,
+  validateVehicle,
+  withKind,
+  withStaticsType,
+} from './vehicleDraft';
 import { LoadCurveChart, VehicleSchematic } from './VehiclePreview';
 
 const CUSTOM = 'custom';
@@ -26,6 +42,7 @@ const KINDS: { value: VehicleKind; label: string }[] = [
   { value: 'semi', label: 'Semi-trailer' },
   { value: 'container', label: 'Container chassis' },
   { value: 'flatbed', label: 'Flatbed' },
+  { value: 'tanker', label: 'Tanker' },
 ];
 const ACCESS: { value: AccessSide; label: string }[] = [
   { value: 'rear', label: 'Rear' },
@@ -158,9 +175,13 @@ export function VehicleEditor({ request }: { request: { mode: 'create' | 'edit';
   const addVehicle = useStore((s) => s.addVehicle);
   const setActiveVehicle = useStore((s) => s.setActiveVehicle);
   const toast = useStore((s) => s.toast);
+  const commit = useStore((s) => s.commit);
+  const placements = useStore((s) => s.plan.placements);
 
   const [presetId, setPresetId] = useState('eu-rigid-18');
   const [draft, setDraft] = useState<Vehicle | null>(() => initialDraft(request, vehicles, presetId));
+  /** Compartment positions follow their capacities; off = the user places each bulkhead. */
+  const [autoLayout, setAutoLayout] = useState(() => !draft?.tank || isAutoLayout(draft.tank.compartments, draft.cargo.l));
   const close = useCallback(() => closeDialog('vehicleEditor'), [closeDialog]);
 
   const issues = useMemo(() => (draft ? validateVehicle(draft, sys) : []), [draft, sys]);
@@ -183,7 +204,8 @@ export function VehicleEditor({ request }: { request: { mode: 'create' | 'edit';
   const set = (patch: Partial<Vehicle>) => setDraft({ ...v, ...patch });
   const setArtic = (patch: Partial<ArticStatics>) => s.type === 'artic' && set({ statics: { ...s, ...patch } });
 
-  const setCargoLength = (l: number) => set({ cargo: { ...v.cargo, l }, zones: scaleZones(v.zones, v.cargo.l, l) });
+  const setCargoLength = (l: number) =>
+    set({ cargo: { ...v.cargo, l }, zones: scaleZones(v.zones, v.cargo.l, l), ...(v.tank ? { tank: { ...v.tank, compartments: fitCompartments(v.tank.compartments, l, autoLayout) } } : {}) });
   const setTempControlled = (on: boolean) =>
     set(
       on
@@ -197,13 +219,46 @@ export function VehicleEditor({ request }: { request: { mode: 'create' | 'edit';
   const choosePreset = (id: string) => {
     setPresetId(id);
     setDraft(id === CUSTOM ? createCustomVehicle() : createVehicle(id));
+    setAutoLayout(true);
   };
+  const setKind = (kind: VehicleKind) => {
+    if (kind === 'tanker' && !v.tank) setAutoLayout(true);
+    setDraft(withKind(v, kind));
+  };
+
+  // tank (tankers only)
+  const tank = v.kind === 'tanker' ? v.tank : undefined;
+  const setTank = (patch: Partial<TankSpec>) => tank && set({ tank: { ...tank, ...patch } });
+  const setCompartments = (list: TankCompartment[]) => setTank({ compartments: list });
+  const setCapacity = (id: Id, capacityL: number) => {
+    const list = (tank?.compartments ?? []).map((c) => (c.id === id ? { ...c, capacityL } : c));
+    setCompartments(autoLayout ? layoutCompartments(list, v.cargo.l) : list);
+  };
+  const setAuto = (on: boolean) => {
+    setAutoLayout(on);
+    if (on && tank) setCompartments(layoutCompartments(tank.compartments, v.cargo.l));
+  };
+  const tankLitres = tank?.compartments.reduce((sum, c) => sum + c.capacityL, 0) ?? 0;
+
+  // Fills placed in this vehicle whose compartment the edit removes go back to Unplaced on save.
+  const ownPlacements = request.mode === 'edit' ? Object.values(placements).filter((p) => p.vehicleId === v.id) : [];
+  const orphanIds = ownPlacements.filter((p) => p.compartmentId !== undefined && !tank?.compartments.some((c) => c.id === p.compartmentId)).map((p) => p.unitId);
+  const packagedAboard = tank ? ownPlacements.filter((p) => p.compartmentId === undefined).length : 0;
 
   const save = () => {
     if (errors.length) return;
     if (request.mode === 'edit') {
-      updateVehicle(v);
-      toast(`Saved ${v.name}`, 'success');
+      if (orphanIds.length) {
+        commit('Edit vehicle', (d) => {
+          const i = d.vehicles.findIndex((x) => x.id === v.id);
+          if (i >= 0) d.vehicles[i] = structuredClone(v);
+          for (const id of orphanIds) delete d.placements[id];
+        });
+        toast(`Saved ${v.name}; ${orphanIds.length} fill${orphanIds.length === 1 ? '' : 's'} returned to Unplaced`, 'success');
+      } else {
+        updateVehicle(v);
+        toast(`Saved ${v.name}`, 'success');
+      }
     } else {
       const id = addVehicle(v);
       setActiveVehicle(id);
@@ -265,7 +320,7 @@ export function VehicleEditor({ request }: { request: { mode: 'create' | 'edit';
                 <Select value={v.region} onChange={(region) => set({ region })} options={REGIONS} aria-label="Region" />
               </Field>
               <Field label="Body">
-                <Select value={v.kind} onChange={(kind) => set({ kind })} options={KINDS} aria-label="Body type" />
+                <Select value={v.kind} onChange={setKind} options={KINDS} aria-label="Body type" />
               </Field>
               <Field label="Statics" className="col-span-2 sm:col-span-3">
                 <SegmentedControl
@@ -281,15 +336,15 @@ export function VehicleEditor({ request }: { request: { mode: 'create' | 'edit';
             </div>
           </Section>
 
-          <Section title="Cargo space and doors">
+          <Section title={tank ? 'Tank barrel and access' : 'Cargo space and doors'}>
             <div className={grid}>
-              <Field label="Cargo length">
+              <Field label={tank ? 'Barrel length' : 'Cargo length'}>
                 <LengthInput metres={v.cargo.l} onChange={setCargoLength} unit={lu} aria-label="Cargo length" />
               </Field>
-              <Field label="Cargo width">
+              <Field label={tank ? 'Barrel width' : 'Cargo width'}>
                 <LengthInput metres={v.cargo.w} onChange={(w) => set({ cargo: { ...v.cargo, w } })} unit={lu} aria-label="Cargo width" />
               </Field>
-              <Field label={v.walls ? 'Cargo height' : 'Height cap'}>
+              <Field label={tank ? 'Barrel height' : v.walls ? 'Cargo height' : 'Height cap'}>
                 <LengthInput metres={v.cargo.h} onChange={(h) => set({ cargo: { ...v.cargo, h } })} unit={lu} aria-label="Cargo height" />
               </Field>
               <Field label="Door width">
@@ -327,6 +382,94 @@ export function VehicleEditor({ request }: { request: { mode: 'create' | 'edit';
               <Toggle checked={v.walls} onChange={(walls) => set({ walls })} label="Closed body (walls)" hint="Off for flatbeds and open decks" />
             </div>
           </Section>
+
+          {tank && (
+            <Section
+              title="Tank"
+              right={
+                <span className="text-[11px] text-muted num">
+                  {formatLitres(tankLitres, sys, 0)} in {tank.compartments.length} compartment{tank.compartments.length === 1 ? '' : 's'} · {formatPercent(tankLitres / barrelLitres(v))} of the barrel
+                </span>
+              }
+            >
+              <div className="flex flex-col gap-3">
+                <p className="text-xs text-muted">The cargo space above is the barrel (length × width × height of its elliptical section).</p>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <Toggle checked={tank.baffled} onChange={(baffled) => setTank({ baffled })} label="Surge baffles" hint="Partial fills are safe to drive" />
+                  <Toggle checked={tank.foodGrade} onChange={(foodGrade) => setTank({ foodGrade })} label="Food-grade" hint="Stainless; milk, edible oil, drinking water" />
+                  <Toggle checked={tank.insulated} onChange={(insulated) => setTank({ insulated })} label="Insulated" hint="Keeps chilled liquids such as milk cold" />
+                  <Toggle checked={tank.pressurised} onChange={(pressurised) => setTank({ pressurised })} label="Pressure vessel (LPG)" hint="Liquefied gases; carries only liquids that need it" />
+                </div>
+                <Toggle checked={autoLayout} onChange={setAuto} label="Position compartments by capacity" hint="Off: set each bulkhead position yourself" />
+                <div className="flex items-center gap-2 text-xs font-medium text-ink-soft">
+                  <span className="flex-1">Compartments (front to rear)</span>
+                  <Button
+                    size="sm"
+                    icon={<Plus className="h-3.5 w-3.5" />}
+                    onClick={() => setCompartments(splitCompartment(tank.compartments, v.cargo.l, autoLayout))}
+                    disabled={tank.compartments.length >= 12}
+                    title="Adds a bulkhead: the largest compartment is split in two"
+                  >
+                    Add compartment
+                  </Button>
+                </div>
+                {tank.compartments.map((c, i) => {
+                  const last = i === tank.compartments.length - 1;
+                  return (
+                    <div key={c.id} className="grid grid-cols-[4.5rem_minmax(0,1.3fr)_minmax(0,1fr)_minmax(0,1.2fr)_auto] items-end gap-2">
+                      <Field label="Label">
+                        <TextInput value={c.label} onChange={(e) => setCompartments(tank.compartments.map((x) => (x.id === c.id ? { ...x, label: e.target.value } : x)))} aria-label={`Compartment ${i + 1} label`} />
+                      </Field>
+                      <Field label="Capacity (brim)">
+                        <LitresInput litres={c.capacityL} onChange={(litres) => setCapacity(c.id, litres)} sys={sys} aria-label={`${c.label} capacity`} />
+                      </Field>
+                      <Field label="From">
+                        <div className="flex h-9 items-center px-1 text-sm text-muted num font-mono">{formatLength(c.fromX, sys, { big: true })}</div>
+                      </Field>
+                      <Field label={last || autoLayout ? 'To' : 'Bulkhead at'}>
+                        {last || autoLayout ? (
+                          <div className="flex h-9 items-center px-1 text-sm text-muted num font-mono">{formatLength(c.toX, sys, { big: true })}</div>
+                        ) : (
+                          <LengthInput metres={c.toX} onChange={(x) => setCompartments(moveTankBulkhead(tank.compartments, i, x))} unit={lu} aria-label={`Bulkhead behind ${c.label}`} />
+                        )}
+                      </Field>
+                      <div className="flex">
+                        <IconButton label={`Move ${c.label} forward`} size="sm" disabled={i === 0} onClick={() => setCompartments(moveCompartment(tank.compartments, i, -1, v.cargo.l, autoLayout))}>
+                          <ChevronUp className="h-4 w-4" />
+                        </IconButton>
+                        <IconButton label={`Move ${c.label} back`} size="sm" disabled={last} onClick={() => setCompartments(moveCompartment(tank.compartments, i, 1, v.cargo.l, autoLayout))}>
+                          <ChevronDown className="h-4 w-4" />
+                        </IconButton>
+                        <IconButton
+                          label={`Remove ${c.label} (merge into its neighbour)`}
+                          size="sm"
+                          disabled={tank.compartments.length <= 1}
+                          onClick={() => setCompartments(mergeCompartment(tank.compartments, i, v.cargo.l, autoLayout))}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </IconButton>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Section>
+          )}
+
+          {(orphanIds.length > 0 || packagedAboard > 0) && (
+            <div className="flex flex-col gap-1.5 rounded-lg bg-warn-soft px-3 py-2 text-xs text-warn" role="status">
+              {orphanIds.length > 0 && (
+                <p>
+                  {orphanIds.length} bulk fill{orphanIds.length === 1 ? ' sits' : 's sit'} in a compartment this edit removes; saving returns {orphanIds.length === 1 ? 'it' : 'them'} to Unplaced.
+                </p>
+              )}
+              {packagedAboard > 0 && (
+                <p>
+                  {packagedAboard} packaged unit{packagedAboard === 1 ? ' is' : 's are'} on this vehicle; a tanker carries only bulk fills, so {packagedAboard === 1 ? 'it' : 'they'} will be flagged.
+                </p>
+              )}
+            </div>
+          )}
 
           <Section title="Temperature">
             <div className="flex flex-col gap-3">

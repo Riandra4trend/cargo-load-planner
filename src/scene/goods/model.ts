@@ -1,4 +1,6 @@
 import { Color, type BufferGeometry } from 'three';
+import { PACKAGING_PRESETS } from '../../data/packaging';
+import { liquidColor } from '../../domain/liquids';
 import type { ItemSpec } from '../../domain/types';
 import { goodsArchetype, type GoodsArchetype } from './archetype';
 import { PartBuilder, seededRandom, vary } from './builder';
@@ -37,6 +39,8 @@ export function goodsKey(spec: ItemSpec): string {
     spec.hazmat?.hazClass ?? '',
     spec.fragile ? 'F' : '',
     Math.sign(spec.cogOffset.x),
+    spec.liquid?.liquidId ?? '',
+    Math.round(liquidFraction(spec) * 100),
   ].join('|');
 }
 
@@ -64,6 +68,12 @@ const BARCODE = '#2a2a2a';
 const STEEL = '#8f969d';
 const DARK_STEEL = '#3d4247';
 
+/** Packaged liquid: volume / brim capacity of its container (0 without liquid or capacity). */
+export function liquidFraction(spec: ItemSpec): number {
+  const cap = spec.liquid?.containerCapacityL ?? PACKAGING_PRESETS[spec.packaging]?.capacityL;
+  return spec.liquid && cap ? Math.min(1, Math.max(0, spec.liquid.volumeL / cap)) : 0;
+}
+
 /** Generates the realistic model of one unit. Pure; callers own (and dispose) the geometries. */
 export function buildGoodsModel(spec: ItemSpec): GoodsModel {
   const { l, w, h } = spec.dims;
@@ -77,7 +87,8 @@ export function buildGoodsModel(spec: ItemSpec): GoodsModel {
 
   if (archetype === 'drum' && spec.shape === 'cylinder-upright') drumTags(ctx);
   else if (archetype === 'paper-roll' || archetype === 'cable-reel') rollTags(ctx);
-  else if (archetype !== 'machine') boxTags(ctx);
+  // Machines and loose jerrycans carry their own, smaller tags.
+  else if (archetype !== 'machine' && !(archetype === 'jerrycan' && ph === 0)) boxTags(ctx);
 
   BUILDERS[archetype](ctx);
   const merged = b.merge();
@@ -443,9 +454,10 @@ const BUILDERS: Record<GoodsArchetype, (ctx: Ctx) => void> = {
   drum: (ctx) => {
     const text = `${ctx.spec.name} ${ctx.spec.category}`.toLowerCase();
     const body = ctx.spec.hazmat?.hazClass === '3' ? '#c0392b' : /oil|lubric/.test(text) ? '#1f4e9a' : palette(ctx.rnd, ['#2f6aa3', '#2b8a3e', '#495057']);
-    if (ctx.spec.shape === 'cylinder-upright') singleDrum(ctx, body);
+    const lid = ctx.spec.liquid ? liquidColor(ctx.spec.liquid.liquidId) : null;
+    if (ctx.spec.shape === 'cylinder-upright') singleDrum(ctx, body, lid);
     else {
-      cylinderGrid(ctx, { diameter: 0.585, height: 0.88, body, lid: '#2b2f33', rims: true });
+      cylinderGrid(ctx, { diameter: 0.585, height: 0.88, body, lid: lid ?? '#2b2f33', rims: true });
       film(ctx);
     }
   },
@@ -479,7 +491,13 @@ const BUILDERS: Record<GoodsArchetype, (ctx: Ctx) => void> = {
     }
     const z0 = r.z0 + pb;
     const bar = 0.022;
-    b.box([r.x0 + 0.04, r.y0 + 0.04, z0], [r.x1 - 0.04, r.y1 - 0.04, r.z1 - 0.07], '#eef0e8');
+    const tank: [readonly [number, number, number], readonly [number, number, number]] = [[r.x0 + 0.04, r.y0 + 0.04, z0], [r.x1 - 0.04, r.y1 - 0.04, r.z1 - 0.07]];
+    if (ctx.spec.liquid) {
+      // Translucent HDPE tank showing the liquid at volume / capacity.
+      const level = z0 + 0.01 + (tank[1][2] - z0 - 0.02) * liquidFraction(ctx.spec);
+      b.box([tank[0][0] + 0.01, tank[0][1] + 0.01, z0 + 0.01], [tank[1][0] - 0.01, tank[1][1] - 0.01, level], liquidColor(ctx.spec.liquid.liquidId));
+      b.box(tank[0], tank[1], null, 'film');
+    } else b.box(tank[0], tank[1], '#eef0e8');
     b.cylinder([(r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2, r.z1 - 0.045], 0.11, 0.05, 2, '#f5f5f2', 'solid', 20);
     b.cylinder([r.x1 - 0.02, (r.y0 + r.y1) / 2, z0 + 0.09], 0.04, 0.05, 0, '#2b2f33', 'solid', 12);
     const cage = '#a9afb6';
@@ -550,6 +568,36 @@ const BUILDERS: Record<GoodsArchetype, (ctx: Ctx) => void> = {
     for (const f of [0.35, 0.65]) {
       const x = r.x0 + (r.x1 - r.x0) * f;
       b.box([x - 0.012, r.y0 - 0.002, r.z1 - hz * 0.3], [x + 0.012, r.y0, r.z1 - hz * 0.08], BARCODE);
+    }
+  },
+  jerrycan: (ctx) => {
+    const { b, r } = ctx;
+    const can = ctx.spec.liquid ? new Color(liquidColor(ctx.spec.liquid.liquidId)).lerp(new Color('#ffffff'), 0.12) : new Color('#2f6fd1');
+    const target = [0.36, 0.17, 0.47] as const;
+    const nx = Math.max(1, Math.round((r.x1 - r.x0) / target[0]));
+    const ny = Math.max(1, Math.round((r.y1 - r.y0) / target[1]));
+    const nz = Math.max(1, Math.round((r.z1 - r.z0) / target[2]));
+    const cells = Math.max(1, Math.min(nx * ny * nz, Math.floor((b.room - 2) / 7)));
+    const cw = (r.x1 - r.x0) / nx;
+    const cd = (r.y1 - r.y0) / ny;
+    const ch = (r.z1 - r.z0) / nz;
+    let n = 0;
+    for (let k = 0; k < nz; k++) {
+      for (let i = 0; i < nx; i++) {
+        for (let j = 0; j < ny && n < cells; j++, n++) {
+          jerrycanAt(b, { x0: r.x0 + i * cw + 0.004, x1: r.x0 + (i + 1) * cw - 0.004, y0: r.y0 + j * cd + 0.004, y1: r.y0 + (j + 1) * cd - 0.004, z0: r.z0 + k * ch, z1: r.z0 + (k + 1) * ch - 0.004 }, can);
+        }
+      }
+    }
+    if (ctx.spec.palletHeight > 0) film(ctx);
+    else {
+      // Colour-mode tag: a band around the can(s) at mid height.
+      const z0 = r.z0 + (r.z1 - r.z0) * 0.45;
+      const z1 = z0 + Math.min(0.08, (r.z1 - r.z0) * 0.14);
+      b.box([r.x0, r.y0 - TAG, z0], [r.x1, r.y0, z1], null, 'tag');
+      b.box([r.x0, r.y1, z0], [r.x1, r.y1 + TAG, z1], null, 'tag');
+      b.box([r.x0 - TAG, r.y0 - TAG, z0], [r.x0, r.y1 + TAG, z1], null, 'tag');
+      b.box([r.x1, r.y0 - TAG, z0], [r.x1 + TAG, r.y1 + TAG, z1], null, 'tag');
     }
   },
   custom: (ctx) => {
@@ -649,14 +697,34 @@ function machine({ b, r, rnd, spec }: Ctx): void {
   b.box([mx - motorLen * 0.15, (r.y0 + r.y1) / 2 - mr * 0.4, mz + mr * 0.85], [mx + motorLen * 0.15, (r.y0 + r.y1) / 2 + mr * 0.4, mz + mr * 1.15], '#6c757d');
 }
 
-function singleDrum({ b, r }: Ctx, body: string): void {
+/** One HDPE jerrycan filling a cell: body with side recesses, carry handle, spout and cap. */
+function jerrycanAt(b: PartBuilder, c: { x0: number; x1: number; y0: number; y1: number; z0: number; z1: number }, color: Color): void {
+  const L = c.x1 - c.x0;
+  const W = c.y1 - c.y0;
+  const H = c.z1 - c.z0;
+  const top = c.z1 - H * 0.16;
+  b.box([c.x0, c.y0, c.z0], [c.x1, c.y1, top], color);
+  const recess = color.clone().multiplyScalar(0.82);
+  b.box([c.x0 + L * 0.15, c.y0 - 0.002, c.z0 + H * 0.15], [c.x1 - L * 0.15, c.y0 + 0.002, top - H * 0.12], recess);
+  b.box([c.x0 + L * 0.15, c.y1 - 0.002, c.z0 + H * 0.15], [c.x1 - L * 0.15, c.y1 + 0.002, top - H * 0.12], recess);
+  const cy = (c.y0 + c.y1) / 2;
+  const hw = Math.min(0.025, W * 0.18);
+  b.box([c.x0 + L * 0.08, cy - hw, c.z1 - H * 0.05], [c.x0 + L * 0.62, cy + hw, c.z1], color);
+  b.box([c.x0 + L * 0.08, cy - hw, top], [c.x0 + L * 0.16, cy + hw, c.z1], color);
+  b.cylinder([c.x1 - L * 0.16, cy, top + H * 0.06], Math.min(0.03, W * 0.2), H * 0.12, 2, color, 'solid', 14);
+  b.cylinder([c.x1 - L * 0.16, cy, c.z1 - H * 0.015], Math.min(0.035, W * 0.22), H * 0.03, 2, '#1d1d1b', 'solid', 14);
+}
+
+function singleDrum({ b, r }: Ctx, body: string, liquid: string | null): void {
   const rad = Math.min(r.x1 - r.x0, r.y1 - r.y0) / 2;
   const cx = b.l / 2;
   const cy = b.w / 2;
   const h = r.z1 - r.z0;
   b.cylinder([cx, cy, r.z0 + h / 2], rad * 0.96, h - 0.01, 2, body, 'solid', 32);
   for (const f of [0.012, 0.33, 0.67, 0.988]) b.cylinder([cx, cy, r.z0 + h * f], rad, 0.02, 2, new Color(body).multiplyScalar(0.7), 'solid', 32);
-  b.cylinder([cx, cy, r.z1 - 0.004], rad * 0.9, 0.008, 2, new Color(body).multiplyScalar(0.8), 'solid', 32);
+  b.cylinder([cx, cy, r.z1 - 0.004], rad * 0.9, 0.008, 2, liquid ?? new Color(body).multiplyScalar(0.8), 'solid', 32);
+  // Contents band: the liquid's colour around the drum's lower third.
+  if (liquid) b.cylinder([cx, cy, r.z0 + h * 0.2], rad * 0.975, h * 0.12, 2, liquid, 'solid', 32);
   b.cylinder([cx + rad * 0.55, cy, r.z1 + 0.004], rad * 0.09, 0.016, 2, '#ced4da', 'solid', 12);
   b.cylinder([cx - rad * 0.55, cy, r.z1 + 0.004], rad * 0.06, 0.016, 2, '#ced4da', 'solid', 12);
 }

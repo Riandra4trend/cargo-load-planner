@@ -1,5 +1,5 @@
 /** Per-plan memoised lookups shared by checkPlan, validateMove and the fix suggestions. */
-import { expandUnits } from '../domain/geometry';
+import { expandUnits, isBulkLiquid } from '../domain/geometry';
 import type { CargoUnit, Id, Plan, Vehicle } from '../domain/types';
 import { Arrangement, makeSolid } from './arrangement';
 
@@ -28,7 +28,10 @@ export function planIndex(plan: Plan): PlanIndex {
   return index;
 }
 
-/** Arrangement of the units placed in a vehicle, optionally without one unit (memoised per plan). */
+/**
+ * Arrangement of the floor units placed in a vehicle, optionally without one unit (memoised per
+ * plan). Bulk liquid fills have no box and take no part in geometric checks.
+ */
 export function vehicleArrangement(plan: Plan, vehicle: Vehicle, excludeId: Id | null = null): Arrangement {
   let byKey = arrangementCache.get(plan);
   if (!byKey) {
@@ -43,7 +46,7 @@ export function vehicleArrangement(plan: Plan, vehicle: Vehicle, excludeId: Id |
   for (const p of Object.values(plan.placements)) {
     if (p.vehicleId !== vehicle.id || p.unitId === excludeId) continue;
     const u = units.get(p.unitId);
-    if (u) solids.push(makeSolid(u, labels.get(u.id) ?? u.spec.name, p));
+    if (u && !isBulkLiquid(u.spec)) solids.push(makeSolid(u, labels.get(u.id) ?? u.spec.name, p));
   }
   const arr = Arrangement.build(vehicle, plan.settings, solids);
   byKey.set(key, arr);

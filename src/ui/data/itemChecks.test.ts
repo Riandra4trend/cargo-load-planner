@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { PACKAGING_PRESETS } from '../../data/packaging';
-import { createSeedPlan, makeSpec } from '../../data/seed';
+import { createSeedPlan, createTankerSeedPlan, makeBulkLiquidSpec, makeSpec } from '../../data/seed';
 import { BUILT_IN_TEMPLATES } from '../../data/templates';
+import { liquidDef } from '../../domain/liquids';
 import { createVehicle } from '../../domain/presets';
 import { HAZMAT_CLASSES } from '../../domain/settings';
+import type { ItemSpec, Plan } from '../../domain/types';
 import { lbToKg, toMetres } from '../../domain/units';
-import { checkDraft, deriveItem, fitVehicle, hasErrors, type LineDraft } from './itemChecks';
+import { checkDraft, containerCapacityL, deriveItem, fitVehicle, hasErrors, liquidTareKg, type LineDraft } from './itemChecks';
 
 const plan = createSeedPlan();
 const draftOf = (spec = makeSpec({ name: 'Test', dims: { l: 1.2, w: 0.8, h: 1.2 }, weightKg: 300 })): LineDraft => ({ spec, quantity: 1, stopId: plan.stops[0].id, priority: 'normal' });
@@ -98,5 +100,72 @@ describe('checkDraft', () => {
     const w = checkDraft(draftOf(heavy), plan, deriveItem(heavy, plan)).warnings;
     expect(w.some((x) => x.includes('high density'))).toBe(true);
     expect(w.some((x) => x.includes('forklift'))).toBe(true);
+  });
+});
+
+describe('liquids', () => {
+  const tankerPlan = createTankerSeedPlan();
+  const settings = tankerPlan.settings;
+  const tpl = (id: string) => BUILT_IN_TEMPLATES.find((t) => t.id === `tpl-${id}`)!.spec;
+  const issuesOf = (spec: ItemSpec, p: Plan = tankerPlan) => checkDraft({ spec, quantity: 1, stopId: p.stops[0].id, priority: 'normal' }, p, deriveItem(spec, p));
+
+  it('derives template weights from volume × density + container', () => {
+    expect(tpl('diesel-drum').weightKg).toBeCloseTo(200 * 0.84 + PACKAGING_PRESETS.drum.tareKg, 6);
+    expect(liquidTareKg(tpl('diesel-drum'))).toBeCloseTo(PACKAGING_PRESETS.drum.tareKg, 6);
+    expect(tpl('sulfuric-ibc').weightKg).toBeCloseTo(1000 * 1.84 + PACKAGING_PRESETS.ibc.tareKg, 6);
+    expect(tpl('gasoline-bulk').weightKg).toBeCloseTo(5800 * 0.74, 6);
+    expect(tpl('sulfuric-ibc').hazmat).toMatchObject({ unNumber: 'UN1830', hazClass: '8' });
+    expect(tpl('diesel-drum').hazmat?.unNumber).toBe('UN1202');
+    const liquids = BUILT_IN_TEMPLATES.filter((t) => t.spec.liquid);
+    expect(liquids.length).toBeGreaterThanOrEqual(12);
+    for (const t of liquids) expect(t.spec.weightKg, t.spec.name).toBeGreaterThanOrEqual(t.spec.liquid!.volumeL * t.spec.liquid!.densityKgPerL - 1e-9);
+  });
+
+  it('lists the compartments that hold a bulk fill at its max fill', () => {
+    const semi = createVehicle('tanker-semi-32k');
+    expect(fitVehicle(makeBulkLiquidSpec('gasoline', 5800), semi, settings)).toMatchObject({ fits: true, detail: 'C1, C2, C3, C4, C5' });
+    expect(fitVehicle(makeBulkLiquidSpec('diesel', 7700), semi, settings)).toMatchObject({ fits: true, detail: 'C1' });
+    expect(fitVehicle(makeBulkLiquidSpec('diesel', 7800), semi, settings).fits).toBe(false);
+  });
+
+  it('requires food-grade, insulated and pressurised tanks where needed', () => {
+    const milk = makeBulkLiquidSpec('milk', 7800);
+    expect(fitVehicle(milk, createVehicle('tanker-semi-32k'), settings).reason).toBe('needs a food-grade tank');
+    expect(fitVehicle(milk, createVehicle('tanker-water-8k'), settings).reason).toBe('needs an insulated tank');
+    expect(fitVehicle(milk, createVehicle('tanker-food-24k'), settings).fits).toBe(true);
+    const lpg = makeBulkLiquidSpec('lpg', 20000);
+    expect(fitVehicle(lpg, createVehicle('tanker-semi-32k'), settings).reason).toBe('needs a pressurised tank');
+    expect(fitVehicle(lpg, createVehicle('tanker-lpg-44k'), settings).fits).toBe(true);
+    expect(fitVehicle(makeBulkLiquidSpec('diesel', 5000), createVehicle('tanker-lpg-44k'), settings).fits).toBe(false);
+    expect(fitVehicle(tpl('diesel-drum'), createVehicle('tanker-semi-32k'), settings).fits).toBe(false);
+  });
+
+  it('only compares bulk fills with tankers and packaged units with the other vehicles', () => {
+    const d = deriveItem(makeBulkLiquidSpec('water', 7800), plan);
+    expect(d.planFits).toEqual([]);
+    expect(d.presetFits.every((f) => f.name.toLowerCase().includes('tanker'))).toBe(true);
+    expect(deriveItem(tpl('water-ibc'), tankerPlan).planFits).toEqual([]);
+  });
+
+  it('warns about the tank type when no plan tanker fits and blocks fills no tanker can hold', () => {
+    expect(issuesOf(makeBulkLiquidSpec('milk', 7800)).warnings).toContain('Needs a food-grade tank');
+    expect(issuesOf(makeBulkLiquidSpec('lpg', 20000)).warnings).toContain('Needs a pressurised tank');
+    expect(issuesOf(makeBulkLiquidSpec('diesel', 9000)).blocking).toHaveLength(1);
+    expect(issuesOf(makeBulkLiquidSpec('gasoline', 5800))).toEqual({ errors: {}, blocking: [], warnings: [] });
+    expect(issuesOf(makeBulkLiquidSpec('water', 7800), plan).warnings[0]).toMatch(/^Needs a tanker/);
+  });
+
+  it('checks density, volume and container capacity', () => {
+    const drum = tpl('diesel-drum');
+    expect(containerCapacityL(drum)).toBe(216);
+    const over = { ...drum, liquid: { ...drum.liquid!, volumeL: 220 } };
+    expect(issuesOf(over, plan).errors.volume).toMatch(/capacity/);
+    const nearBrim = { ...drum, liquid: { ...drum.liquid!, volumeL: 212 } };
+    expect(issuesOf(nearBrim, plan).warnings.some((w) => w.includes('97 % max fill'))).toBe(true);
+    const custom = { ...drum, packaging: 'custom' as const, liquid: { ...drum.liquid!, volumeL: 30, containerCapacityL: 25 } };
+    expect(issuesOf(custom, plan).errors.volume).toMatch(/capacity/);
+    const broken = { ...drum, liquid: { ...drum.liquid!, densityKgPerL: 0, volumeL: 0 } };
+    expect(Object.keys(issuesOf(broken, plan).errors)).toEqual(expect.arrayContaining(['density', 'volume']));
+    expect(liquidDef('lpg')?.pressurised).toBe(true);
   });
 });

@@ -1,8 +1,11 @@
-import type { Id, Placement, Plan } from '../domain/types';
+import { bulkCog, isBulkLiquid } from '../domain/geometry';
+import type { CargoUnit, Id, Placement, Plan, Vehicle } from '../domain/types';
 import { computeStages, loadShares, type StagePoint } from '../physics';
 import { Arrangement } from '../rules/arrangement';
 import { planIndex, vehicleArrangement } from '../rules/context';
 import { searchPlacement } from '../rules/placement';
+import { fillsOf, stageExcessKg, surges, worstUtilisation } from '../rules/tank';
+import { validateMove } from '../rules/validateMove';
 import { usableOrientations } from './construct';
 
 /** Score units per LIFO conflict and per overloaded kg (front-most scoring adds 10 per metre). */
@@ -19,6 +22,8 @@ export function findPlacementFor(plan: Plan, unitId: Id, vehicleId: Id): Placeme
   const unit = units.get(unitId);
   const v = vehicles.get(vehicleId);
   if (!unit || !v) return null;
+  if (isBulkLiquid(unit.spec)) return findCompartmentFor(plan, unit, v);
+  if (v.tank) return null;
   const orients = usableOrientations(unit, v, plan);
   if (!orients.length) return null;
   const arr = Arrangement.build(v, plan.settings, vehicleArrangement(plan, v, unitId).solids);
@@ -49,4 +54,30 @@ export function findPlacementFor(plan: Plan, unitId: Id, vehicleId: Id): Placeme
     bound: (a) => 10 * a.x - 0.5,
   });
   return found ? { unitId, vehicleId, pos: found.cand.pos, orient: found.cand.orient } : null;
+}
+
+/**
+ * Best free compartment for a bulk fill that validateMove accepts: no surge first, then the least
+ * axle excess over all stages, then the lowest worst axle utilisation. Null when none fits.
+ */
+function findCompartmentFor(plan: Plan, unit: CargoUnit, v: Vehicle): Placement | null {
+  if (!v.tank) return null;
+  const { units, labels } = planIndex(plan);
+  const others = fillsOf(v, plan.placements, units, labels).filter((f) => f.id !== unit.id);
+  const base: StagePoint[] = others.map((f) => {
+    const g = bulkCog(v, f.c, f.spec);
+    return { id: f.id, x: g.x, y: g.y, z: g.z, kg: f.spec.weightKg, stopSeq: units.get(f.id)?.stopSeq ?? Number.MAX_SAFE_INTEGER };
+  });
+  let best: { p: Placement; key: [number, number, number] } | null = null;
+  for (const c of v.tank.compartments) {
+    if (others.some((f) => f.c.id === c.id)) continue;
+    const p: Placement = { unitId: unit.id, vehicleId: v.id, compartmentId: c.id, pos: { x: c.fromX, y: 0, z: 0 }, orient: 0 };
+    if (!validateMove(plan, p).ok) continue;
+    const g = bulkCog(v, c, unit.spec);
+    const stages = computeStages(v, plan.stops, [...base, { id: unit.id, x: g.x, y: g.y, z: g.z, kg: unit.spec.weightKg, stopSeq: unit.stopSeq }], plan.settings.nearLimit);
+    const key: [number, number, number] = [surges(v, c, unit.spec) ? 1 : 0, stageExcessKg(v, stages), worstUtilisation(stages)];
+    const wins = !best || key[0] < best.key[0] || (key[0] === best.key[0] && (key[1] < best.key[1] - 0.5 || (Math.abs(key[1] - best.key[1]) <= 0.5 && key[2] < best.key[2] - 1e-9)));
+    if (wins) best = { p, key };
+  }
+  return best?.p ?? null;
 }

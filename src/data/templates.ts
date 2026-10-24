@@ -1,5 +1,7 @@
+import { liquidDef } from '../domain/liquids';
 import type { ItemSpec, ItemTemplate } from '../domain/types';
-import { makeSpec } from './seed';
+import { PACKAGING_PRESETS } from './packaging';
+import { makeBulkLiquidSpec, makeSpec } from './seed';
 
 const EUR = { l: 1.2, w: 0.8 };
 const EUR_HALF = { l: 0.8, w: 0.6 };
@@ -9,6 +11,46 @@ const EUR_DECK = 0.144;
 const US_DECK = 0.14;
 
 const tpl = (id: string, spec: ItemSpec, contents?: string): ItemTemplate => ({ id: `tpl-${id}`, spec, contents, builtIn: true });
+
+/** A library liquid in a preset container at its nominal fill: weight = litres × density + container tare. */
+function packagedLiquid(liquidId: string, kind: 'drum' | 'ibc' | 'jerrycan', partial: Partial<ItemSpec> & Pick<ItemSpec, 'name'>): ItemSpec {
+  const def = liquidDef(liquidId)!;
+  const p = PACKAGING_PRESETS[kind];
+  const volumeL = p.nominalL!;
+  const liquidKg = volumeL * def.densityKgPerL;
+  return makeSpec({
+    category: 'Liquids',
+    packaging: kind,
+    shape: p.shape,
+    dims: { ...p.dims! },
+    weightKg: liquidKg + p.tareKg,
+    temp: def.temp,
+    isFood: def.isFood,
+    hazmat: def.hazmat ? { ...def.hazmat, netQtyKg: Math.round(liquidKg) } : undefined,
+    liquid: { liquidId, name: def.name, densityKgPerL: def.densityKgPerL, volumeL },
+    ...partial,
+  });
+}
+
+/** 30 × 19 L water bottles (≈ 0.75 kg empty each) in 3 layers on a EUR pallet. */
+const BOTTLES = 30;
+const BOTTLE_L = 19;
+const bottledWater = (): ItemSpec => {
+  const def = liquidDef('drinking-water')!;
+  const volumeL = BOTTLES * BOTTLE_L;
+  return makeSpec({
+    name: 'Drinking water 19 L bottles',
+    sku: 'WTR-0019',
+    category: 'Liquids',
+    origin: 'Indonesia',
+    packaging: 'eur-pallet',
+    palletHeight: EUR_DECK,
+    dims: { ...EUR, h: 1.62 },
+    weightKg: volumeL * def.densityKgPerL + BOTTLES * 0.75 + PACKAGING_PRESETS['eur-pallet'].tareKg,
+    isFood: true,
+    liquid: { liquidId: def.id, name: def.name, densityKgPerL: def.densityKgPerL, volumeL },
+  });
+};
 
 /**
  * Built-in item templates: typical, approximate figures for common freight. Users copy them into
@@ -132,18 +174,24 @@ export const BUILT_IN_TEMPLATES: ItemTemplate[] = [
     '500 m NYY 4 × 95',
   ),
   tpl(
-    'oil-drum',
-    makeSpec({ name: 'Lubricating oil drum 200 L', sku: 'LUB-0200', category: 'Lubricants', origin: 'Belgium', packaging: 'drum', shape: 'cylinder-upright', dims: { l: 0.585, w: 0.585, h: 0.88 }, weightKg: 192, stackable: true, maxLoadOnTopKg: 400, maxStackLayers: 2 }),
-    '200 L',
-  ),
-  tpl(
-    'ibc',
-    makeSpec({ name: 'IBC tote 1000 L', sku: 'LIQ-1000', category: 'Bulk liquids', origin: 'Netherlands', packaging: 'ibc', dims: { l: 1.2, w: 1.0, h: 1.15 }, weightKg: 1060, stackable: true, maxLoadOnTopKg: 1100, maxStackLayers: 2 }),
-    '1000 L',
-  ),
-  tpl(
     'bricks',
     makeSpec({ name: 'Bricks on industrial pallet', sku: 'BLD-0410', category: 'Building materials', origin: 'Czechia', packaging: 'industrial-pallet', palletHeight: EUR_DECK, dims: { ...IND, h: 1.0 }, weightKg: 1300 }),
     '400 bricks',
   ),
+
+  // Liquids: packaged ------------------------------------------------------------------------------
+  tpl('diesel-drum', packagedLiquid('diesel', 'drum', { name: 'Diesel drum 200 L', sku: 'FUE-1202', origin: 'Singapore', stackable: true, maxLoadOnTopKg: 400, maxStackLayers: 2 }), '200 L'),
+  tpl('oil-drum', packagedLiquid('lube-oil', 'drum', { name: 'Lubricating oil drum 200 L', sku: 'LUB-0200', origin: 'Belgium', stackable: true, maxLoadOnTopKg: 400, maxStackLayers: 2 }), '200 L'),
+  tpl('water-ibc', packagedLiquid('drinking-water', 'ibc', { name: 'Drinking water IBC 1,000 L', sku: 'WTR-1000', origin: 'Indonesia', stackable: true, maxLoadOnTopKg: 1100, maxStackLayers: 2 }), '1,000 L'),
+  tpl('palm-oil-ibc', packagedLiquid('palm-oil', 'ibc', { name: 'Palm oil IBC 1,000 L', sku: 'FOD-0910', origin: 'Malaysia', stackable: true, maxLoadOnTopKg: 1000, maxStackLayers: 2 }), '1,000 L'),
+  tpl('sulfuric-ibc', packagedLiquid('sulfuric-acid', 'ibc', { name: 'Sulfuric acid IBC 1,000 L', sku: 'CHM-1830', origin: 'Germany' }), '1,000 L'),
+  tpl('gasoline-jerrycan', packagedLiquid('gasoline', 'jerrycan', { name: 'Gasoline jerrycan 20 L', sku: 'FUE-1203', origin: 'Indonesia', stackable: true, maxLoadOnTopKg: 60, maxStackLayers: 3 }), '20 L'),
+  tpl('water-bottles', bottledWater(), `${BOTTLES} × ${BOTTLE_L} L bottles`),
+
+  // Liquids: bulk tanker fills (largest legal fill of the preset compartments at the liquid's max fill) --
+  tpl('diesel-bulk', makeBulkLiquidSpec('diesel', 7700, { name: 'Diesel, bulk 7,700 L', sku: 'BLK-1202', category: 'Liquids' }), '7,700 L'),
+  tpl('gasoline-bulk', makeBulkLiquidSpec('gasoline', 5800, { name: 'Gasoline, bulk 5,800 L', sku: 'BLK-1203', category: 'Liquids' }), '5,800 L'),
+  tpl('water-bulk', makeBulkLiquidSpec('water', 7800, { name: 'Water, bulk 7,800 L', sku: 'BLK-0001', category: 'Liquids' }), '7,800 L'),
+  tpl('milk-bulk', makeBulkLiquidSpec('milk', 7800, { name: 'Milk, bulk 7,800 L (chilled)', sku: 'BLK-0103', category: 'Liquids' }), '7,800 L'),
+  tpl('palm-oil-bulk', makeBulkLiquidSpec('palm-oil', 7700, { name: 'Palm oil, bulk 7,700 L', sku: 'BLK-0910', category: 'Liquids' }), '7,700 L'),
 ];

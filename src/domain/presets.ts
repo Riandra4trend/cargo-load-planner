@@ -24,7 +24,7 @@ const fullZone = (length: number, temp: TempZone['temp'] = 'ambient'): TempZone[
 ];
 
 /** Compartments along a barrel of `length` metres, each as long as its share of the total capacity. */
-function compartments(length: number, capacitiesL: number[]): TankCompartment[] {
+export function compartments(length: number, capacitiesL: number[]): TankCompartment[] {
   const total = capacitiesL.reduce((sum, c) => sum + c, 0);
   let x = 0;
   return capacitiesL.map((capacityL, i) => {
@@ -310,7 +310,7 @@ const PRESETS: Record<string, () => PresetBody> = {
       front: { id: 'front', label: 'Front axle', x: -2.0, count: 1, spread: 0, tareKg: 5000, maxKg: 8000, minShare: 0.2, steer: true },
       rear: { id: 'rear', label: 'Rear tandem', x: 4.0, count: 2, spread: 1.35, tareKg: 5000, maxKg: 19_000, minShare: 0.25, driven: true },
     },
-    tank: { compartments: compartments(6.2, [4000, 4000, 4000, 4000]), baffled: false, foodGrade: false, insulated: false },
+    tank: { compartments: compartments(6.2, [4000, 4000, 4000, 4000]), baffled: false, foodGrade: false, insulated: false, pressurised: false },
   }),
   'tanker-semi-32k': () => ({
     presetId: 'tanker-semi-32k',
@@ -330,7 +330,7 @@ const PRESETS: Record<string, () => PresetBody> = {
       trailerTareX: 6.0,
       ...euTractor(),
     },
-    tank: { compartments: compartments(11.5, [8000, 6000, 6000, 6000, 6000]), baffled: false, foodGrade: false, insulated: false },
+    tank: { compartments: compartments(11.5, [8000, 6000, 6000, 6000, 6000]), baffled: false, foodGrade: false, insulated: false, pressurised: false },
   }),
   'tanker-water-8k': () => ({
     presetId: 'tanker-water-8k',
@@ -347,7 +347,7 @@ const PRESETS: Record<string, () => PresetBody> = {
       front: { id: 'front', label: 'Front axle', x: -1.4, count: 1, spread: 0, tareKg: 3300, maxKg: 6000, minShare: 0.2, steer: true },
       rear: { id: 'rear', label: 'Rear axle', x: 3.1, count: 1, spread: 0, tareKg: 2700, maxKg: 10_000, minShare: 0.25, driven: true },
     },
-    tank: { compartments: compartments(4.2, [8000]), baffled: true, foodGrade: true, insulated: false },
+    tank: { compartments: compartments(4.2, [8000]), baffled: true, foodGrade: true, insulated: false, pressurised: false },
   }),
   'tanker-food-24k': () => ({
     presetId: 'tanker-food-24k',
@@ -367,7 +367,28 @@ const PRESETS: Record<string, () => PresetBody> = {
       trailerTareX: 5.5,
       ...euTractor(),
     },
-    tank: { compartments: compartments(10.0, [8000, 8000, 8000]), baffled: true, foodGrade: true, insulated: true },
+    tank: { compartments: compartments(10.0, [8000, 8000, 8000]), baffled: true, foodGrade: true, insulated: true, pressurised: false },
+  }),
+  'tanker-lpg-44k': () => ({
+    presetId: 'tanker-lpg-44k',
+    name: 'LPG tanker 44,000 L (semi, pressurised)',
+    region: 'EU',
+    ...tankerBase(12.0, 2.4, 2.4),
+    grossLimitKg: 40_000,
+    payloadKg: 20_200,
+    deckHeight: 1.25,
+    bayLength: 3.0,
+    fuel: { emptyLPer100km: 24, fullLPer100km: 32, idleLPerHour: 2.5, reeferLPerHour: 0, tankL: 600 },
+    statics: {
+      type: 'artic',
+      kingpinX: 1.0,
+      trailerAxle: { id: 'trailer', label: 'Trailer tridem', x: 8.4, count: 3, spread: 2.62, tareKg: 0, maxKg: 24_000 },
+      trailerTareKg: 12_000,
+      trailerTareX: 6.5,
+      ...euTractor(),
+    },
+    // One cylindrical pressure vessel with surge plates; LPG fills to 85 % at most.
+    tank: { compartments: compartments(12.0, [44_000]), baffled: true, foodGrade: false, insulated: false, pressurised: true },
   }),
 };
 
@@ -383,6 +404,7 @@ export const VEHICLE_PRESETS: VehiclePresetInfo[] = [
   { id: 'tanker-semi-32k', name: 'Fuel tanker 32,000 L (semi-trailer)', region: 'EU', summary: '5 compartments · 25.1 t payload' },
   { id: 'tanker-water-8k', name: 'Water tanker 8,000 L (rigid 4×2)', region: 'EU', summary: '1 baffled compartment · food-grade' },
   { id: 'tanker-food-24k', name: 'Food-grade tanker 24,000 L (semi, insulated)', region: 'EU', summary: '3 × 8,000 L · milk, edible oil' },
+  { id: 'tanker-lpg-44k', name: 'LPG tanker 44,000 L (semi, pressurised)', region: 'EU', summary: '1 pressure vessel · 85 % max fill · 20.2 t LPG' },
 ];
 
 /** Fresh, independent vehicle built from a preset. */

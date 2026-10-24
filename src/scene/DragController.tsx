@@ -1,12 +1,13 @@
 import { useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
-import { MeshBasicMaterial, Plane, Raycaster, Vector2, Vector3 } from 'three';
-import { allowedOrientations, boxCenter, expandUnits, orientedSize, placementBox } from '../domain/geometry';
+import { MeshBasicMaterial, Plane, Raycaster, Vector2, Vector3, type Camera } from 'three';
+import { allowedOrientations, boxCenter, expandUnits, isBulkLiquid, orientedSize, placementBox } from '../domain/geometry';
 import type { Id, ItemSpec, Orientation, Placement, Vehicle } from '../domain/types';
 import { validateMove } from '../rules';
 import { useStore } from '../state/store';
 import { boxToThree, threeToCargo, toThree } from './coords';
 import { dragCandidate, dragContext, type DragContext } from './dragMath';
+import { compartmentAtX } from './tankMath';
 import { interaction, syncControls } from './interaction';
 import { SceneLabel } from './labels';
 import { UNIT_BOX } from './materials';
@@ -44,6 +45,23 @@ const sidePlane = new Plane(new Vector3(0, 0, 1), 0);
 const hit = new Vector3();
 
 /**
+ * Cargo x / y under the pointer: on the horizontal plane at cargo height `planeZ`, or, in
+ * near-horizontal views (side view), on the vertical plane through cargo y = `centreY`.
+ */
+export function pointerToCargoPlane(raycaster: Raycaster, camera: Camera, ndc: Vector2, planeZ: number, centreY: number): { x: number; y: number } | null {
+  raycaster.setFromCamera(ndc, camera);
+  if (Math.abs(raycaster.ray.direction.y) > 0.2) {
+    floorPlane.constant = -planeZ;
+    if (!raycaster.ray.intersectPlane(floorPlane, hit)) return null;
+    const c = threeToCargo(hit);
+    return { x: c.x, y: c.y };
+  }
+  sidePlane.constant = -toThree(0, centreY, 0)[2];
+  if (!raycaster.ray.intersectPlane(sidePlane, hit)) return null;
+  return { x: threeToCargo(hit).x, y: centreY };
+}
+
+/**
  * Drag & drop of placed units on the cargo floor (snap, stack, validate, R rotates, Esc cancels) and
  * HTML5 drops of unplaced units from the table. Returns the pointer-down handler for cargo units.
  */
@@ -68,17 +86,7 @@ export function useDragController(vehicle: Vehicle, draggable: boolean): (unitId
 
   /** Pointer -> cargo x / y on the floor; in near-horizontal views a vertical plane through `centreY`. */
   const pointerToCargo = useCallback(
-    (ndc: Vector2, centreY: number): { x: number; y: number } | null => {
-      raycaster.setFromCamera(ndc, get().camera);
-      if (Math.abs(raycaster.ray.direction.y) > 0.2) {
-        if (!raycaster.ray.intersectPlane(floorPlane, hit)) return null;
-        const c = threeToCargo(hit);
-        return { x: c.x, y: c.y };
-      }
-      sidePlane.constant = -toThree(0, centreY, 0)[2];
-      if (!raycaster.ray.intersectPlane(sidePlane, hit)) return null;
-      return { x: threeToCargo(hit).x, y: centreY };
-    },
+    (ndc: Vector2, centreY: number, planeZ = 0): { x: number; y: number } | null => pointerToCargoPlane(raycaster, get().camera, ndc, planeZ, centreY),
     [get, raycaster],
   );
 
@@ -220,9 +228,26 @@ export function useDragController(vehicle: Vehicle, draggable: boolean): (unitId
         return;
       }
       const v = vehicleRef.current;
-      const p = pointerToCargo(toNdc(ev.clientX, ev.clientY, new Vector2()), v.cargo.w / 2);
+      const bulk = isBulkLiquid(unit.spec);
+      if (bulk !== (v.kind === 'tanker')) {
+        store.toast(bulk ? `Can't place ${unit.spec.name} here: bulk liquid needs a tanker compartment` : `Can't place ${unit.spec.name} here: a tanker carries only bulk liquids`, 'error');
+        return;
+      }
+      const p = pointerToCargo(toNdc(ev.clientX, ev.clientY, new Vector2()), v.cargo.w / 2, bulk ? v.cargo.h / 2 : 0);
       if (!p || p.x < -1 || p.x > v.cargo.l + 1 || p.y < -1 || p.y > v.cargo.w + 1) {
-        store.toast(`Drop ${unit.spec.name} onto the cargo floor`, 'error');
+        store.toast(bulk ? `Drop ${unit.spec.name} onto a tank compartment` : `Drop ${unit.spec.name} onto the cargo floor`, 'error');
+        return;
+      }
+      if (bulk) {
+        const c = compartmentAtX(v, p.x);
+        if (!c) return;
+        const check = validateMove(plan, { unitId, vehicleId: v.id, compartmentId: c.id, pos: { x: c.fromX, y: 0, z: 0 }, orient: 0 });
+        if (!check.ok) {
+          store.toast(`Can't fill ${c.label} with ${unit.spec.name}: ${check.reasons[0] ?? 'blocked'}`, 'error');
+          return;
+        }
+        store.assignCompartment(unitId, v.id, c.id);
+        store.select([unitId], 'replace');
         return;
       }
       const ctx = dragContext(plan, v.id, unitId);

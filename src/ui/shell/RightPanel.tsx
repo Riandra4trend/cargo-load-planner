@@ -8,6 +8,8 @@ import { FuelPanel } from './FuelPanel';
 import { LoadDistributionChart } from './LoadDistributionChart';
 import { SimulationPanel } from './SimulationPanel';
 import { StageTable } from './StageTable';
+import { TankPanel } from './TankPanel';
+import { formatCargoLitres, tankCapacityL } from './tanker';
 import { useShownState } from './useShownState';
 import { ViolationsList } from './ViolationsList';
 
@@ -25,12 +27,14 @@ export function RightPanel() {
     <aside aria-label={`Load checks for ${v.name}`} className="flex w-full shrink-0 flex-col overflow-hidden rounded-card border border-line bg-card shadow-card xl:w-[340px]">
       <div className="flex items-center gap-2 border-b border-line px-4 py-2.5">
         <p className="min-w-0 flex-1 truncate text-xs text-muted">
-          <span className="font-semibold text-ink">{v.name}</span> · <span className="num">{formatDims(v.cargo, sys, { big: true })}</span>
+          <span className="font-semibold text-ink">{v.name}</span> ·{' '}
+          <span className="num">{v.tank ? `${formatCargoLitres(tankCapacityL(v), sys)} · ${v.tank.compartments.length} compartments` : formatDims(v.cargo, sys, { big: true })}</span>
         </p>
       </div>
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto md:grid md:grid-cols-2 md:content-start xl:block">
         <SimulationPanel />
         <AxlePanel shown={shown} />
+        <TankPanel shown={shown} />
         <StageTable shown={shown} />
         <FuelPanel shown={shown} />
         <LoadDistributionChart shown={shown} />

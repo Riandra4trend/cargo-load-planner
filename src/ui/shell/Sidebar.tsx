@@ -106,7 +106,7 @@ export function Sidebar() {
                   <span className="flex-1 truncate font-medium text-ink-soft">{v.name}</span>
                 </div>
                 <p className="num pl-3 text-muted">
-                  {ve.fill.units} units · {formatMass(ve.axle.cargoKg, sys)} · {formatPercent(ve.fill.volume)} vol
+                  {ve.fill.units} {v.tank ? 'fills' : 'units'} · {formatMass(ve.axle.cargoKg, sys)} · {formatPercent(ve.fill.volume)} {v.tank ? 'full' : 'vol'}
                 </p>
               </li>
             );

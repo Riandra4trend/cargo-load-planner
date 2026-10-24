@@ -2,19 +2,21 @@ import { Printer } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import { TEMP_LABELS } from '../../domain/colors';
+import { isBulkLiquid } from '../../domain/geometry';
 import { DISCLAIMER } from '../../domain/settings';
-import type { Plan, Vehicle } from '../../domain/types';
-import { formatConsumption, formatDims, formatDistance, formatLength, formatLitres, formatMass, formatMoney, formatPercent, formatWeight } from '../../domain/units';
+import type { CargoUnit, Plan, UnitSystem, Vehicle } from '../../domain/types';
+import { formatConsumption, formatDims, formatDistance, formatLength, formatLiquidDensity, formatLitres, formatMass, formatMoney, formatPercent, formatWeight } from '../../domain/units';
 import { routeKm } from '../../physics/fuel';
 import { loadingSequence } from '../../sim/sequence';
 import { evaluatePlan, type VehicleEval } from '../../state/evaluate';
 import { useDisplayPlan } from '../../state/hooks';
 import { useStore } from '../../state/store';
 import { Button } from '../common/Button';
-import { AxleStatusChip } from '../common/Chip';
+import { AxleStatusChip, ColorDot } from '../common/Chip';
 import { Modal } from '../common/Modal';
 import { PlanDiagram, PlanLegend } from './PlanDiagram';
 import { formatPlanDate, lowerFirst, SEVERITY_LABEL, SEVERITY_ORDER, STATUS_TEXT, stageShort, weightPair } from './shellFormat';
+import { compartmentRows, formatCargoLitres, litrePair, packagedContents, tankCapacityL, unitLitres } from './tanker';
 
 const DIAGRAM_WIDTH = 700;
 
@@ -63,6 +65,16 @@ function FuelReport({ plan, ve }: { plan: Plan; ve: VehicleEval }) {
   );
 }
 
+/** "22.61 t · 5 fills · 28,300 L", "17.38 t · 26 units", or both counts for mixed plans. */
+function totalCargoText(units: readonly CargoUnit[], totalKg: number, sys: UnitSystem): string {
+  const fills = units.filter((u) => isBulkLiquid(u.spec));
+  const others = units.length - fills.length;
+  const parts = [formatMass(totalKg, sys)];
+  if (others > 0 || fills.length === 0) parts.push(`${others} unit${others === 1 ? '' : 's'}`);
+  if (fills.length > 0) parts.push(`${fills.length} fill${fills.length === 1 ? '' : 's'}`, formatCargoLitres(fills.reduce((sum, u) => sum + unitLitres(u), 0), sys));
+  return parts.join(' · ');
+}
+
 function MetaItem({ label, value }: { label: string; value: string }) {
   return (
     <div>
@@ -74,6 +86,90 @@ function MetaItem({ label, value }: { label: string; value: string }) {
 
 function H({ children }: { children: string }) {
   return <h3 className="mb-1.5 mt-4 border-b border-line pb-1 text-[12px] font-semibold uppercase tracking-wide text-ink-soft">{children}</h3>;
+}
+
+/** Tanker section: compartment table, filling order and discharge order per stop. */
+function TankReport({ plan, ve }: { plan: Plan; ve: VehicleEval }) {
+  const sys = plan.settings.units;
+  const v = ve.vehicle;
+  const evaluation = evaluatePlan(plan);
+  const rows = compartmentRows(plan, evaluation.units, v);
+  const customers = new Map(plan.customers.map((c) => [c.id, c.name]));
+  const stopsBySeq = new Map(plan.stops.map((s) => [s.sequence, s]));
+  const filled = rows.filter((r) => r.fills.length > 0);
+  const bySeq = new Map<number, typeof rows>();
+  for (const r of filled) for (const u of r.fills) bySeq.set(u.stopSeq, [...(bySeq.get(u.stopSeq) ?? []), { ...r, fills: [u] }]);
+  const fillText = (r: (typeof rows)[number]) => `${r.compartment.label} ${r.fills[0].spec.liquid?.name ?? r.fills[0].spec.name} ${formatCargoLitres(unitLitres(r.fills[0]), sys)}`;
+  return (
+    <>
+      <H>Tank compartments</H>
+      <table className="w-full text-[11px]">
+        <thead>
+          <tr className="text-left text-[10px] uppercase tracking-wide text-muted">
+            <th className="py-1 pr-2">Comp.</th>
+            <th className="px-2 py-1 text-right">Capacity</th>
+            <th className="px-2 py-1">Liquid</th>
+            <th className="px-2 py-1">UN / class</th>
+            <th className="px-2 py-1 text-right">Volume</th>
+            <th className="px-2 py-1 text-right">Fill</th>
+            <th className="px-2 py-1 text-right">Weight</th>
+            <th className="py-1 pl-2">Stop / customer</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => {
+            const u = r.fills[0];
+            const stop = u ? stopsBySeq.get(u.stopSeq) : undefined;
+            return (
+              <tr key={r.compartment.id} className="border-t border-line">
+                <td className="py-1 pr-2 font-mono font-semibold">{r.compartment.label}</td>
+                <td className="num px-2 py-1 text-right font-mono text-[10.5px]">{formatCargoLitres(r.compartment.capacityL, sys)}</td>
+                <td className="px-2 py-1">
+                  {u ? (
+                    <span className="flex items-center gap-1.5">
+                      <ColorDot color={r.color} size={8} />
+                      {u.spec.liquid?.name ?? u.spec.name}
+                      {r.fills.length > 1 && <span className="text-bad"> +{r.fills.length - 1}</span>}
+                    </span>
+                  ) : (
+                    <span className="text-muted">empty</span>
+                  )}
+                </td>
+                <td className="px-2 py-1">{u?.spec.hazmat ? `${u.spec.hazmat.unNumber} · cl. ${u.spec.hazmat.hazClass}` : '–'}</td>
+                <td className="num px-2 py-1 text-right font-mono text-[10.5px]">{u ? formatCargoLitres(r.volumeL, sys) : '–'}</td>
+                <td className={`num px-2 py-1 text-right font-mono text-[10.5px] ${r.fill > r.maxFill + 1e-9 ? 'text-bad' : ''}`}>{u ? formatPercent(r.fill) : '–'}</td>
+                <td className="num px-2 py-1 text-right font-mono text-[10.5px]">{u ? formatWeight(r.kg, sys) : '–'}</td>
+                <td className="py-1 pl-2">{u ? `${u.stopSeq} · ${stop ? (customers.get(stop.customerId) ?? stop.name) : ''}` : '–'}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <H>Filling order</H>
+      {filled.length === 0 ? (
+        <p className="text-[11.5px] text-muted">No fills on this tanker.</p>
+      ) : (
+        <p className="text-[11px] leading-relaxed">{filled.map(fillText).join(' → ')}</p>
+      )}
+      <H>Discharge order</H>
+      {bySeq.size === 0 ? (
+        <p className="text-[11.5px] text-muted">Nothing to discharge.</p>
+      ) : (
+        <ol className="space-y-0.5 text-[11px]">
+          {[...bySeq.entries()]
+            .sort((a, b) => a[0] - b[0])
+            .map(([seq, list]) => (
+              <li key={seq}>
+                <span className="font-semibold">
+                  Stop {seq} · {stopsBySeq.get(seq)?.name ?? ''}:
+                </span>{' '}
+                {list.map(fillText).join(', ')}
+              </li>
+            ))}
+        </ol>
+      )}
+    </>
+  );
 }
 
 function VehicleReport({ plan, ve }: { plan: Plan; ve: VehicleEval }) {
@@ -89,45 +185,67 @@ function VehicleReport({ plan, ve }: { plan: Plan; ve: VehicleEval }) {
       <div className="flex items-baseline gap-2 border-b-2 border-ink pb-1">
         <h2 className="flex-1 text-[15px] font-semibold">{v.name}</h2>
         <span className="num text-[11px] text-muted">
-          {formatDims(v.cargo, sys, { big: true })} · payload {formatMass(v.payloadKg, sys)} · GVW/GCW {formatMass(v.grossLimitKg, sys)}
+          {v.tank ? `${formatCargoLitres(tankCapacityL(v), sys)} in ${v.tank.compartments.length} compartments` : formatDims(v.cargo, sys, { big: true })} · payload {formatMass(v.payloadKg, sys)} · GVW/GCW{' '}
+          {formatMass(v.grossLimitKg, sys)}
         </span>
       </div>
       <div className="mt-2 grid grid-cols-4 gap-3 text-[11.5px]">
         <MetaItem label="Cargo weight" value={`${formatMass(ve.axle.cargoKg, sys)} (${formatPercent(ve.fill.weight)} of payload)`} />
-        <MetaItem label="Units · volume" value={`${ve.fill.units} units · ${formatPercent(ve.fill.volume)}`} />
+        {v.tank ? (
+          <MetaItem label="Fills · volume" value={`${ve.fill.units} fills · ${litrePair(ve.fill.placedVolume * 1000, ve.fill.usableVolume * 1000, sys)} (${formatPercent(ve.fill.volume)})`} />
+        ) : (
+          <MetaItem label="Units · volume" value={`${ve.fill.units} units · ${formatPercent(ve.fill.volume)}`} />
+        )}
         <MetaItem label="Remaining capacity" value={ve.remaining.kg > 0 ? `${formatMass(ve.remaining.kg, sys)} (${lowerFirst(ve.remaining.limitedBy)})` : `none: ${lowerFirst(ve.remaining.limitedBy)}`} />
-        <MetaItem label="Cargo COG" value={ve.axle.cog ? `${formatLength(ve.axle.cog.x, sys, { big: true })} from front, ${formatLength(ve.axle.cog.z, sys, { big: true })} high` : 'empty'} />
+        <MetaItem label="Cargo COG" value={ve.axle.cog ? `${formatLength(ve.axle.cog.x, sys, { big: true })} from ${v.tank ? 'tank front' : 'front'}, ${formatLength(ve.axle.cog.z, sys, { big: true })} high` : 'empty'} />
       </div>
 
       <div className="report-diagrams">
-        <H>Floor plan (top view)</H>
-        <PlanDiagram plan={plan} vehicleId={v.id} mode="top" width={DIAGRAM_WIDTH} />
-        <H>Side elevation</H>
-        <PlanDiagram plan={plan} vehicleId={v.id} mode="side" width={DIAGRAM_WIDTH} />
+        {v.tank ? (
+          <>
+            <H>Tank compartments (side view)</H>
+            <PlanDiagram plan={plan} vehicleId={v.id} mode="side" width={DIAGRAM_WIDTH} />
+            <H>Top view</H>
+            <PlanDiagram plan={plan} vehicleId={v.id} mode="top" width={DIAGRAM_WIDTH} />
+          </>
+        ) : (
+          <>
+            <H>Floor plan (top view)</H>
+            <PlanDiagram plan={plan} vehicleId={v.id} mode="top" width={DIAGRAM_WIDTH} />
+            <H>Side elevation</H>
+            <PlanDiagram plan={plan} vehicleId={v.id} mode="side" width={DIAGRAM_WIDTH} />
+          </>
+        )}
         <div className="mt-2">
           <PlanLegend plan={plan} vehicleId={v.id} />
         </div>
       </div>
 
-      <H>Loading instructions (forklift order)</H>
-      {steps.length === 0 ? (
-        <p className="text-[11.5px] text-muted">No units on this vehicle.</p>
+      {v.tank ? (
+        <TankReport plan={plan} ve={ve} />
       ) : (
-        <ol className="columns-2 gap-6 text-[11px] leading-snug">
-          {steps.map((s, i) => (
-            <li key={s.unitId} className="mb-0.5 flex break-inside-avoid gap-1.5">
-              <span className="num w-12 shrink-0 font-mono font-semibold">Step {i + 1}</span>
-              <span>
-                {s.name} → {s.position}
-                <span className="text-muted">
-                  {' '}
-                  · {evaluation.bayOfUnit[s.unitId]} · stop {s.stopSeq}
-                  {stopName.get(s.stopSeq) ? ` (${stopName.get(s.stopSeq)})` : ''}
-                </span>
-              </span>
-            </li>
-          ))}
-        </ol>
+        <>
+          <H>Loading instructions (forklift order)</H>
+          {steps.length === 0 ? (
+            <p className="text-[11.5px] text-muted">No units on this vehicle.</p>
+          ) : (
+            <ol className="columns-2 gap-6 text-[11px] leading-snug">
+              {steps.map((s, i) => (
+                <li key={s.unitId} className="mb-0.5 flex break-inside-avoid gap-1.5">
+                  <span className="num w-12 shrink-0 font-mono font-semibold">Step {i + 1}</span>
+                  <span>
+                    {s.name} → {s.position}
+                    <span className="text-muted">
+                      {' '}
+                      · {evaluation.bayOfUnit[s.unitId]} · stop {s.stopSeq}
+                      {stopName.get(s.stopSeq) ? ` (${stopName.get(s.stopSeq)})` : ''}
+                    </span>
+                  </span>
+                </li>
+              ))}
+            </ol>
+          )}
+        </>
       )}
 
       <H>Axle loads per stage</H>
@@ -223,7 +341,7 @@ export function ReportView({ plan }: { plan: Plan }) {
         <MetaItem label="Distance" value={routeKm(plan) > 0 ? formatDistance(routeKm(plan), sys) : ''} />
         <MetaItem label="Driver" value={m.driver} />
         <MetaItem label="Vehicles" value={plan.vehicles.map((v) => v.name).join(', ')} />
-        <MetaItem label="Total cargo" value={`${formatMass(evaluation.totalKg, sys)} · ${evaluation.units.length} units`} />
+        <MetaItem label="Total cargo" value={totalCargoText(evaluation.units, evaluation.totalKg, sys)} />
         <MetaItem label="Orders loaded" value={`${evaluation.orders.loaded} of ${evaluation.orders.total}`} />
         <MetaItem label="Fuel (estimate)" value={evaluation.fuel.litres > 0 ? `${formatLitres(evaluation.fuel.litres, sys)} · ${formatMoney(evaluation.fuel.cost, plan.settings.currency)}` : ''} />
       </dl>
@@ -242,7 +360,7 @@ export function ReportView({ plan }: { plan: Plan }) {
               <th className="px-1.5 py-1">Item</th>
               <th className="px-1.5 py-1">SKU</th>
               <th className="px-1.5 py-1 text-right">Qty</th>
-              <th className="px-1.5 py-1">Dimensions</th>
+              <th className="px-1.5 py-1">{lines.some((l) => isBulkLiquid(l.spec)) ? 'Dimensions / volume' : 'Dimensions'}</th>
               <th className="px-1.5 py-1 text-right">Weight / unit</th>
               <th className="px-1.5 py-1">Handling</th>
               <th className="py-1 pl-1.5">Placed</th>
@@ -253,12 +371,23 @@ export function ReportView({ plan }: { plan: Plan }) {
               const stop = stops.get(l.stopId);
               const units = evaluation.units.filter((u) => u.lineId === l.id);
               const placed = units.filter((u) => plan.placements[u.id]);
-              const where = [...new Set(placed.map((u) => `T${vehicleIndex.get(plan.placements[u.id].vehicleId)}`))].join(', ');
+              const bulk = isBulkLiquid(l.spec);
+              const where = [
+                ...new Set(
+                  placed.map((u) => {
+                    const p = plan.placements[u.id];
+                    const bay = bulk ? evaluation.bayOfUnit[u.id] : undefined;
+                    return `T${vehicleIndex.get(p.vehicleId)}${bay ? ` ${bay}` : ''}`;
+                  }),
+                ),
+              ].join(', ');
+              const contents = packagedContents(l, sys);
               const handling = [
                 l.spec.temp !== 'ambient' ? TEMP_LABELS[l.spec.temp] : '',
                 l.spec.hazmat ? `${l.spec.hazmat.unNumber} cl. ${l.spec.hazmat.hazClass}` : '',
+                l.spec.liquid ? formatLiquidDensity(l.spec.liquid.densityKgPerL, sys) : '',
                 l.spec.fragile ? 'fragile' : '',
-                l.spec.stackable ? `stack ≤ ${l.spec.maxStackLayers}` : 'no stack',
+                bulk ? 'bulk' : l.spec.stackable ? `stack ≤ ${l.spec.maxStackLayers}` : 'no stack',
                 l.priority === 'urgent' ? 'urgent' : '',
               ].filter(Boolean);
               return (
@@ -266,10 +395,13 @@ export function ReportView({ plan }: { plan: Plan }) {
                   <td className="py-1 pr-1.5">
                     <span className="num font-semibold">{stop?.sequence ?? '–'}</span> {stop ? customers.get(stop.customerId) : ''}
                   </td>
-                  <td className="px-1.5 py-1">{l.spec.name}</td>
+                  <td className="px-1.5 py-1">
+                    {l.spec.name}
+                    {contents && <span className="block text-muted">{contents}</span>}
+                  </td>
                   <td className="whitespace-nowrap px-1.5 py-1 font-mono">{l.spec.sku}</td>
                   <td className="num px-1.5 py-1 text-right">{l.quantity}</td>
-                  <td className="num whitespace-nowrap px-1.5 py-1">{formatDims(l.spec.dims, sys)}</td>
+                  <td className="num whitespace-nowrap px-1.5 py-1">{bulk ? formatCargoLitres(l.spec.liquid?.volumeL ?? 0, sys) : formatDims(l.spec.dims, sys)}</td>
                   <td className="num px-1.5 py-1 text-right">{formatWeight(l.spec.weightKg, sys)}</td>
                   <td className="px-1.5 py-1">{handling.join(', ')}</td>
                   <td className={`py-1 pl-1.5 ${placed.length < units.length ? 'text-bad' : ''}`}>

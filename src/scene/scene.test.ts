@@ -9,10 +9,11 @@ import { threeToCargo, toThree, vecToThree } from './coords';
 import { dragCandidate, dragContext } from './dragMath';
 import { goodsArchetype } from './goods/archetype';
 import { MAX_PARTS } from './goods/builder';
-import { buildGoodsModel, disposeGoodsModel } from './goods/model';
+import { buildGoodsModel, disposeGoodsModel, liquidFraction } from './goods/model';
 import { goodsInstanceMatrix, orientationRotation } from './goods/orientation';
 import { axleLoadText } from './sceneFormat';
 import { dockLayout } from './staging';
+import { chordWidth, compartmentAtX, liquidLevel, tankBarrel } from './tankMath';
 import { unitParts } from './unitParts';
 import { vehicleLayout } from './vehicleLayout';
 
@@ -75,7 +76,9 @@ describe('goods generator', () => {
     expect(pick('Lubricating oil drum 200 L')).toBe('drum');
     expect(pick('Paper roll')).toBe('paper-roll');
     expect(pick('Cable reel')).toBe('cable-reel');
-    expect(pick('IBC tote 1000 L')).toBe('ibc');
+    expect(pick('Drinking water IBC 1,000 L')).toBe('ibc');
+    expect(pick('Gasoline jerrycan 20 L')).toBe('jerrycan');
+    expect(pick('Diesel drum 200 L')).toBe('drum');
     expect(pick('Bricks on industrial pallet')).toBe('bricks');
     expect(pick('Flat-pack furniture cartons')).toBe('furniture');
     expect(goodsArchetype(makeSpec({ name: 'Spare parts', packaging: 'carton', dims: { l: 0.6, w: 0.4, h: 0.4 }, weightKg: 12 }))).toBe('carton');
@@ -204,5 +207,45 @@ describe('axleLoadText', () => {
   it('formats load / limit in the plan unit system', () => {
     expect(axleLoadText(15_400, 15_422, 'metric')).toBe('15.4 / 15.4 t');
     expect(axleLoadText(15_400, 15_422.2, 'imperial')).toBe('33,951 / 34,000 lb');
+  });
+});
+
+describe('tank liquid level', () => {
+  it('maps fill fractions of an elliptical section to levels', () => {
+    expect(liquidLevel(0, 1.8)).toBe(0);
+    expect(liquidLevel(1, 1.8)).toBe(1.8);
+    expect(liquidLevel(0.5, 1.8)).toBeCloseTo(0.9, 9);
+    let prev = 0;
+    for (let i = 1; i <= 100; i++) {
+      const level = liquidLevel(i / 100, 2.4);
+      expect(level).toBeGreaterThan(prev);
+      prev = level;
+    }
+    // A quarter of the area sits well below a quarter of the height (narrow bottom).
+    expect(liquidLevel(0.25, 2)).toBeGreaterThan(0.5);
+    expect(chordWidth(1.2, 2.4, 2.4)).toBeCloseTo(2.4, 9);
+    expect(chordWidth(0, 2.4, 2.4)).toBeCloseTo(0, 9);
+  });
+
+  it('finds compartments along the barrel and fits pressure-vessel heads inside the cargo length', () => {
+    const v = createVehicle('tanker-semi-32k');
+    const cs = v.tank!.compartments;
+    expect(compartmentAtX(v, 0.1)?.id).toBe(cs[0].id);
+    expect(compartmentAtX(v, cs[2].fromX + 0.01)?.id).toBe(cs[2].id);
+    expect(compartmentAtX(v, 99)?.id).toBe(cs[cs.length - 1].id);
+    expect(tankBarrel(v)).toMatchObject({ x0: 0, x1: v.cargo.l });
+    const lpg = createVehicle('tanker-lpg-44k');
+    const b = tankBarrel(lpg);
+    expect(b.head).toBeCloseTo(lpg.cargo.h / 2, 9);
+    expect(b.x1 + b.head).toBeCloseTo(lpg.cargo.l, 9);
+  });
+
+  it('packaged liquids: IBC level and drum keys follow the contents', () => {
+    const ibc = makeSpec({ name: 'IBC tote', packaging: 'ibc', dims: { l: 1.2, w: 1, h: 1.15 }, weightKg: 900, liquid: { liquidId: 'water', name: 'Water', densityKgPerL: 1, volumeL: 525 } });
+    expect(liquidFraction(ibc)).toBeCloseTo(0.5, 9);
+    expect(goodsArchetype(makeSpec({ name: 'Fuel can', packaging: 'jerrycan', dims: { l: 0.36, w: 0.17, h: 0.47 }, weightKg: 18 }))).toBe('jerrycan');
+    const model = buildGoodsModel(ibc);
+    expect(model.film).not.toBeNull();
+    disposeGoodsModel(model);
   });
 });

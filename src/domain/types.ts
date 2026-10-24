@@ -68,6 +68,8 @@ export interface LiquidContents {
   densityKgPerL: number;
   /** Liquid per unit, litres. */
   volumeL: number;
+  /** Packaged liquids in a non-preset container ("Other container"): its brim capacity, litres. Preset containers use PACKAGING_PRESETS[packaging].capacityL. */
+  containerCapacityL?: number;
 }
 
 /** Physical and handling definition of one cargo unit (pallet, crate, drum, ...). */
@@ -251,6 +253,8 @@ export interface TankSpec {
   /** Food-grade (stainless) tank: may carry foodstuffs such as milk, edible oil or drinking water. */
   foodGrade: boolean;
   insulated: boolean;
+  /** Pressure vessel for liquefied gases such as LPG; it carries only liquids that need one. */
+  pressurised: boolean;
 }
 
 export interface Vehicle {

@@ -1,8 +1,12 @@
 import Papa from 'papaparse';
+import { CUSTOM_LIQUID_ID } from '../domain/liquids';
 import type { Plan } from '../domain/types';
 import { downloadBlob, fileSlug } from './planFile';
 
-/** One CSV row per item line, SI units (metres, kg). Column names match the CSV importer's auto-mapping. */
+/**
+ * One CSV row per item line, SI units (metres, kg, litres, kg/L). Column names match the CSV importer's
+ * auto-mapping. Library liquids are written by id, custom liquids by name (the density column carries them).
+ */
 export function itemsToCsv(plan: Plan): string {
   const stopById = new Map(plan.stops.map((s) => [s.id, s]));
   const customerById = new Map(plan.customers.map((c) => [c.id, c]));
@@ -20,6 +24,10 @@ export function itemsToCsv(plan: Plan): string {
       width_m: s.dims.w,
       height_m: s.dims.h,
       weight_kg: s.weightKg,
+      liquid: s.liquid ? (s.liquid.liquidId === CUSTOM_LIQUID_ID ? s.liquid.name : s.liquid.liquidId) : '',
+      volume_l: s.liquid?.volumeL ?? '',
+      density_kg_per_l: s.liquid?.densityKgPerL ?? '',
+      container_capacity_l: s.liquid?.containerCapacityL ?? '',
       shape: s.shape,
       packaging: s.packaging,
       pallet_height_m: s.palletHeight,

@@ -6,6 +6,7 @@ import { overloaded, type Arrangement } from './arrangement';
 import { planIndex, vehicleArrangement } from './context';
 import { boxDistance, evaluateSupport, formatWeightRatio, hazmatIssue, localCheck, needsSupport } from './geometry';
 import { searchPlacement } from './placement';
+import { surgeViolations, tankAxleFixes, tankHardViolations } from './tankCheck';
 
 /** Physics results the evaluation layer computes per vehicle before running the rules. */
 export interface VehiclePhysics {
@@ -40,21 +41,24 @@ export function checkPlan(plan: Plan, _units: readonly CargoUnit[], physics: Rea
   const out: Violation[] = [];
   for (const v of plan.vehicles) {
     const arr = vehicleArrangement(plan, v);
-    vehicleHardViolations(plan, v, arr, out);
+    vehicleHardViolations(plan, v, arr, true, out);
     const ph = physics[v.id];
     if (ph) softViolations(plan, v, ph, arr, out);
   }
   return out;
 }
 
-/** Hard violations only, for the given vehicles (used by the optimiser's final check). */
+/**
+ * Placement-related hard violations of the given vehicles (used by the optimiser's final check;
+ * overfilled packaged containers are item data, not placement, and are left out).
+ */
 export function hardViolations(plan: Plan, vehicleIds: readonly Id[]): Violation[] {
   const out: Violation[] = [];
-  for (const v of plan.vehicles) if (vehicleIds.includes(v.id)) vehicleHardViolations(plan, v, vehicleArrangement(plan, v), out);
+  for (const v of plan.vehicles) if (vehicleIds.includes(v.id)) vehicleHardViolations(plan, v, vehicleArrangement(plan, v), false, out);
   return out;
 }
 
-function vehicleHardViolations(plan: Plan, v: Vehicle, arr: Arrangement, out: Violation[]): void {
+function vehicleHardViolations(plan: Plan, v: Vehicle, arr: Arrangement, containers: boolean, out: Violation[]): void {
   const s = plan.settings;
   const sys = s.units;
   const tol = s.overlapTolerance;
@@ -129,6 +133,7 @@ function vehicleHardViolations(plan: Plan, v: Vehicle, arr: Arrangement, out: Vi
       hard(`hazmat:${pairKey(a.id, b.id)}`, 'hazmat', msg, [a.id, b.id]);
     }
   }
+  tankHardViolations(plan, v, containers, out);
 }
 
 function softViolations(plan: Plan, v: Vehicle, ph: VehiclePhysics, arr: Arrangement, out: Violation[]): void {
@@ -261,7 +266,17 @@ function softViolations(plan: Plan, v: Vehicle, ph: VehiclePhysics, arr: Arrange
     }
   }
 
-  if (axleVios.length) axleFixes(plan, v, stagePoints, axleVios);
+  surgeViolations(plan, v, out);
+  if (axleVios.length && v.tank) {
+    tankAxleFixes(
+      plan,
+      v,
+      ph.points,
+      axleVios.map((x) => x.vio),
+    );
+  } else if (axleVios.length) {
+    axleFixes(plan, v, stagePoints, axleVios);
+  }
 }
 
 /** Slider fix when one hole clears every axle violation at every stage, else per-violation unit moves. */

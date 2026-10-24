@@ -1,5 +1,7 @@
 import {
   CalendarClock,
+  Container,
+  Droplets,
   Download,
   FileJson,
   FilePlus2,
@@ -23,7 +25,7 @@ import {
 } from 'lucide-react';
 import { useRef, useState } from 'react';
 import { createEmptyPlan } from '../../data/emptyPlan';
-import { createSeedPlan } from '../../data/seed';
+import { createSeedPlan, createTankerSeedPlan } from '../../data/seed';
 import type { UnitSystem } from '../../domain/types';
 import { downloadItemsCsv } from '../../io/csv';
 import { downloadPlanJson, readPlanFile } from '../../io/planFile';
@@ -137,7 +139,8 @@ function FileMenu() {
   const s = useStore.getState;
   const entries: MenuEntry[] = [
     { kind: 'heading', label: 'Plan' },
-    { label: 'New sample plan', icon: <Sparkles />, onSelect: () => s().replacePlan(createSeedPlan(), { keepHistory: true }) },
+    { label: 'Sample: mixed freight (reefer)', icon: <Container />, onSelect: () => s().replacePlan(createSeedPlan(), { keepHistory: true }) },
+    { label: 'Sample: fuel delivery (tanker)', icon: <Droplets />, onSelect: () => s().replacePlan(createTankerSeedPlan(), { keepHistory: true }) },
     { label: 'New empty plan', icon: <FilePlus2 />, onSelect: () => s().replacePlan(createEmptyPlan(), { keepHistory: true }) },
     { label: 'Plans…', icon: <FolderOpen />, onSelect: () => s().openDialog('plans', true) },
     { kind: 'separator' },
@@ -149,6 +152,9 @@ function FileMenu() {
     { label: 'Share link…', icon: <Link2 />, onSelect: () => s().openDialog('share', true) },
     { kind: 'separator' },
     { label: 'Print report', icon: <Printer />, onSelect: () => s().openDialog('report', true) },
+    { kind: 'separator' },
+    { kind: 'heading', label: 'Reference & settings' },
+    { label: 'Liquid weights…', icon: <Droplets />, onSelect: () => s().openDialog('liquids', true) },
     { label: 'Settings…', icon: <Settings />, onSelect: () => s().openDialog('settings', true) },
   ];
   return (

@@ -1,12 +1,13 @@
 import { ArrowRight, ChevronLeft, ChevronRight, Forklift, Pause, Play, Printer, RotateCcw, Truck, X } from 'lucide-react';
 import { useEffect, useRef } from 'react';
 import type { Plan } from '../../domain/types';
-import { useActiveVehicleEval, useDisplayPlan } from '../../state/hooks';
+import { useActiveVehicleEval, useDisplayPlan, useEvaluation, useUnitSystem } from '../../state/hooks';
 import { useStore, type AnimationState } from '../../state/store';
 import { Button, IconButton } from '../common/Button';
 import { ColorDot } from '../common/Chip';
 import { SegmentedControl } from '../common/fields';
 import { stopColorsBySeq } from './shellFormat';
+import { dischargeInstruction, fillInstruction } from './tanker';
 import { useLoadingSequence } from './useShownState';
 
 const SPEEDS = ['0.5', '1', '2', '4'] as const;
@@ -49,9 +50,12 @@ function stopLabel(plan: Plan, seq: number): string {
 
 function LoadSimulation({ anim }: { anim: AnimationState }) {
   const plan = useDisplayPlan();
+  const evaluation = useEvaluation();
+  const sys = useUnitSystem();
   const openDialog = useStore((s) => s.openDialog);
   const setAnimation = useStore((s) => s.setAnimation);
   const steps = useLoadingSequence(anim.vehicleId ?? '');
+  const vehicle = plan.vehicles.find((v) => v.id === anim.vehicleId);
   const colors = stopColorsBySeq(plan);
   const listRef = useRef<HTMLOListElement>(null);
   useEffect(() => {
@@ -64,7 +68,7 @@ function LoadSimulation({ anim }: { anim: AnimationState }) {
         <span className="num font-mono text-ink">
           {loaded} / {steps.length}
         </span>
-        <span className="text-muted">units loaded</span>
+        <span className="text-muted">{vehicle?.tank ? 'fills loaded' : 'units loaded'}</span>
         <div className="h-1.5 flex-1 rounded-full bg-black/[0.06]">
           <div className="h-full rounded-full bg-accent transition-[width]" style={{ width: `${steps.length ? (loaded / steps.length) * 100 : 0}%` }} />
         </div>
@@ -90,9 +94,15 @@ function LoadSimulation({ anim }: { anim: AnimationState }) {
                   <span className="num w-12 shrink-0 font-mono font-semibold">Step {i + 1}</span>
                   <ColorDot color={colors.get(s.stopSeq) ?? '#999'} className="mt-1" size={8} />
                   <span className="min-w-0 flex-1">
-                    <span className={isDone ? 'line-through decoration-muted/50' : ''}>{s.name}</span>
-                    <ArrowRight className="mx-1 inline h-3 w-3 text-muted" aria-label="to" />
-                    <span className="text-muted">{s.position}</span>
+                    {s.compartmentId && vehicle && evaluation.unitById.get(s.unitId) ? (
+                      <span className={isDone ? 'line-through decoration-muted/50' : ''}>{fillInstruction(vehicle, evaluation.unitById.get(s.unitId)!, s.compartmentId, sys)}</span>
+                    ) : (
+                      <>
+                        <span className={isDone ? 'line-through decoration-muted/50' : ''}>{s.name}</span>
+                        <ArrowRight className="mx-1 inline h-3 w-3 text-muted" aria-label="to" />
+                        <span className="text-muted">{s.position}</span>
+                      </>
+                    )}
                   </span>
                 </button>
               </li>
@@ -106,6 +116,8 @@ function LoadSimulation({ anim }: { anim: AnimationState }) {
 
 function UnloadSimulation({ anim }: { anim: AnimationState }) {
   const plan = useDisplayPlan();
+  const evaluation = useEvaluation();
+  const sys = useUnitSystem();
   const ve = useActiveVehicleEval();
   const setAnimation = useStore((s) => s.setAnimation);
   const stages = ve.stages;
@@ -114,6 +126,10 @@ function UnloadSimulation({ anim }: { anim: AnimationState }) {
   const prev = stages[stageIndex - 1];
   const leaving = prev ? prev.unitIds.length - st.unitIds.length : 0;
   const colors = stopColorsBySeq(plan);
+  const tanker = !!ve.vehicle.tank;
+  const noun = tanker ? 'fill' : 'unit';
+  const aboardNow = new Set(st.unitIds);
+  const discharged = tanker && prev ? prev.unitIds.filter((id) => !aboardNow.has(id)).map((id) => evaluation.unitById.get(id)).filter((u) => u !== undefined) : [];
   return (
     <>
       <div role="tablist" aria-label="Unloading stage" className="mb-2 flex flex-wrap gap-1">
@@ -136,14 +152,27 @@ function UnloadSimulation({ anim }: { anim: AnimationState }) {
       <Controls anim={{ ...anim, step: stageIndex }} max={stages.length - 1} />
       <p className="mt-2 text-xs text-ink-soft">
         {st.stage === 0 ? (
-          <>Fully loaded at departure: {st.unitIds.length} units aboard.</>
+          <>
+            Fully loaded at departure: {st.unitIds.length} {noun}s aboard.
+          </>
         ) : (
           <>
-            {stopLabel(plan, st.stage)}: {leaving} unit{leaving === 1 ? '' : 's'} unloaded, {st.unitIds.length} still aboard.
+            {stopLabel(plan, st.stage)}: {leaving} {noun}
+            {leaving === 1 ? '' : 's'} {tanker ? 'discharged' : 'unloaded'}, {st.unitIds.length} still aboard.
           </>
         )}{' '}
         The panels below show this stage.
       </p>
+      {discharged.length > 0 && (
+        <ul className="mt-1.5 space-y-0.5 text-xs">
+          {discharged.map((u) => (
+            <li key={u.id} className="flex items-center gap-1.5 text-ink">
+              <ColorDot color={colors.get(u.stopSeq) ?? '#999'} size={7} />
+              {dischargeInstruction(plan, u, sys)}
+            </li>
+          ))}
+        </ul>
+      )}
     </>
   );
 }

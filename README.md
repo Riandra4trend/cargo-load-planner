@@ -11,12 +11,12 @@ Plan truck, trailer and container loads in 3D, in the browser. Define your cargo
 ## What it does
 
 **Cargo objects**
-- Item editor with live 3D preview: L × W × H in mm/cm/m/in/ft, weight in kg/t/lb, quantity, packaging presets (EUR / half / industrial / US GMA pallets, carton, crate, 200 L drum, IBC, long goods), palletized height, centre-of-gravity offset, stackable, max load on top, max layers, fragile, keep upright, allowed rotations, temperature class, food flag, hazmat (UN number, class, packing group).
+- Item editor with live 3D preview: L × W × H in mm/cm/m/in/ft, weight in kg/t/lb, quantity, packaging presets (EUR / half / industrial / US GMA pallets, carton, crate, 200 L drum, IBC, 20 L jerrycan, long goods), palletized height, centre-of-gravity offset, stackable, max load on top, max layers, fragile, keep upright, allowed rotations, temperature class, food flag, hazmat (UN number, class, packing group), and a liquid mode that calculates the weight from volume × density.
 - Live derived values (volume, density, footprint, loading metres) and a fit check against every vehicle and door.
-- 25 built-in templates plus your own template library; CSV import (paste straight from Excel/Sheets, automatic column mapping, inch/lb conversion, per-row error report) and CSV export.
+- 35 built-in templates (12 of them liquids) plus your own template library; CSV import (paste straight from Excel/Sheets, automatic column mapping, inch/lb and gal conversion, liquid and volume columns, per-row error report) and CSV export.
 
 **Vehicles**
-- Presets: EU van 3.5 t, EU box truck 18 t, EU 13.6 m curtainsider, US 53 ft dry van, US 53 ft multi-temp reefer, 40 ft high-cube container, US 48 ft flatbed. All values are approximate and editable.
+- Presets: EU van 3.5 t, EU box truck 18 t, EU 13.6 m curtainsider, US 53 ft dry van, US 53 ft multi-temp reefer, 40 ft high-cube container, US 48 ft flatbed, and five tankers (16,000 L rigid fuel tanker, 32,000 L semi fuel tanker, 8,000 L water tanker, 24,000 L insulated food-grade tanker, 44,000 L pressurised LPG tanker). All values are approximate and editable.
 - Custom vehicle editor (rigid or tractor + semi-trailer) with a live side-view schematic and load distribution curve.
 - Several vehicles per plan; "Suggest" proposes the fewest vehicles that carry everything.
 
@@ -31,6 +31,14 @@ Plan truck, trailer and container loads in 3D, in the browser. Define your cargo
 - Adds the reefer unit while chilled or frozen cargo is aboard (driving and at stops), engine idling at each stop, and an empty return to the depot.
 - Shows cost in any currency, CO₂, time on the road, tank use and freight efficiency (L per 100 t·km or ton-mi/gal) in the right panel, as a KPI card and in the report.
 - Leg distances are entered per stop in the sidebar. Fuel profiles are edited in the vehicle editor; price, CO₂ factor, average speed and stop times in Settings.
+
+**Liquid cargo**
+- Liquid library with 21 liquids, each with its density at 15 °C, UN number and class where it is dangerous goods, food flag, temperature class and maximum fill. It covers water, drinking water, seawater, diesel, gasoline, kerosene, Jet A-1, crude oil, lube oil, palm oil, vegetable oil, milk, fruit juice, molasses, ethanol, methanol, sulfuric acid, hydrochloric acid, caustic soda, liquid fertilizer and LPG. Custom liquids take any density.
+- Weight is volume × density: 1,000 L of water weighs 1,000 kg, diesel 840 kg, gasoline 740 kg, palm oil 910 kg, sulfuric acid 1,840 kg. The Liquid weights reference compares all of them and converts any volume (L or US gal) to weight.
+- Packaged liquids (200 L drums, 1,000 L IBC totes, 20 L jerrycans) ride on any vehicle; the weight includes the container tare, and the editor checks the container capacity.
+- Bulk liquids ride in tanker compartments. Each fill acts at its compartment, so the axle loads change at every station as compartments are emptied.
+- Tank rules: maximum fill per liquid (97 % for fuels, 85 % for LPG), one product per compartment, food-grade tanks for food, insulated tanks for chilled liquids, pressure vessels for LPG, hazmat separation between compartments, and a surge warning for part-full compartments in unbaffled tanks. The optimiser assigns fills to compartments so every axle stays legal at every stop.
+- File → Sample: fuel delivery loads a 32,000 L tanker delivering diesel and gasoline to three stations.
 
 **Optimiser**
 - 3D extreme-point packing plus seeded local search in a Web Worker (3 s budget, progress, cancel). It sizes the multi-temp bulkheads, picks the slider hole and respects pinned units.
@@ -80,11 +88,13 @@ The tests pin these with hand-computed cases. For example, 1000 kg at x = 5 m on
 
 Fuel per leg = distance × (empty + (full − empty) × cargo aboard / rated payload) / 100. The reefer runs for the driving and stop time while chilled or frozen cargo is aboard; idling adds the idle rate × idle minutes at every stop. Cost and CO₂ multiply the total litres by the price and the CO₂ factor (default 2.68 kg/L, fossil diesel).
 
+A bulk liquid fill weighs volume × density and acts at its compartment's centre along the tank, on the centreline, at half the liquid height. When a station's compartments are emptied, the next stage is computed without them.
+
 ## Project structure
 
 ```
 src/
-  domain/    types (shared contract), units, geometry, presets, settings, colours
+  domain/    types (shared contract), units, geometry, presets (incl. tankers), liquids library, settings, colours
   physics/   axle statics, stages, load distribution, capacity, Bridge Formula, slider, fuel estimate
   rules/     hard/soft checks, LIFO, support/stacking, hazmat, fix suggestions, validateMove
   packing/   construction + local search optimiser, Web Worker, findPlacementFor, proposeVehicles
@@ -102,4 +112,5 @@ src/
 - The hazmat compatibility matrix is illustrative, loosely based on ADR 7.5.2 / 49 CFR 177.848. It is not a legal reference.
 - Cylinders are packed by their bounding boxes. The optimiser is heuristic: good, not provably optimal. With a fixed seed and an iteration cap (`maxIterations`) its result is reproducible; with only a time budget it depends on machine speed.
 - Fuel figures are typical values and the model ignores terrain, speed profile, traffic and weather; it is a planning estimate, not a fuel card.
+- Liquid densities are typical values at 15 °C; thermal expansion (volume correction) is ignored. The liquid's centre-of-gravity height uses a simplified tank cross-section, and surge is a rule of thumb, not a dynamic simulation.
 - Not certified for legal compliance. Load securing (lashing) is out of scope.

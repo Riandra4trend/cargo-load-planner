@@ -19,6 +19,8 @@ export interface LiquidDef {
   hazmat?: Hazmat;
   /** Highest safe fill of a tank compartment or container, % of brim capacity (thermal expansion / ullage). */
   maxFillPct: number;
+  /** Liquefied gas: travels in bulk only in a pressurised tank. */
+  pressurised?: true;
   note?: string;
 }
 
@@ -76,7 +78,7 @@ export const LIQUIDS: LiquidDef[] = [
   { id: 'hydrochloric-acid', name: 'Hydrochloric acid 33 %', densityKgPerL: 1.16, category: 'chemical', color: '#FDFFB6', temp: 'ambient', isFood: false, hazmat: { unNumber: 'UN1789', hazClass: '8', packingGroup: 'II' }, maxFillPct: 97 },
   { id: 'caustic-soda', name: 'Caustic soda solution 50 %', densityKgPerL: 1.52, category: 'chemical', color: '#E9ECEF', temp: 'ambient', isFood: false, hazmat: { unNumber: 'UN1824', hazClass: '8', packingGroup: 'II' }, maxFillPct: 97 },
   { id: 'liquid-fertilizer', name: 'Liquid fertilizer (UAN 32)', densityKgPerL: 1.32, category: 'chemical', color: '#99D98C', temp: 'ambient', isFood: false, maxFillPct: 97 },
-  { id: 'lpg', name: 'LPG (liquefied, pressurised)', densityKgPerL: 0.54, category: 'gas', color: '#90E0EF', temp: 'ambient', isFood: false, hazmat: { unNumber: 'UN1075', hazClass: '2.1' }, maxFillPct: 85, note: 'Pressure tank only; propane/butane mix' },
+  { id: 'lpg', name: 'LPG (liquefied, pressurised)', densityKgPerL: 0.54, category: 'gas', color: '#90E0EF', temp: 'ambient', isFood: false, hazmat: { unNumber: 'UN1075', hazClass: '2.1' }, maxFillPct: 85, pressurised: true, note: 'Pressure tank only; propane/butane mix' },
 ];
 
 export const CUSTOM_LIQUID_ID = 'custom';
@@ -96,6 +98,11 @@ export function liquidWeightKg(liquid: Pick<LiquidContents, 'volumeL' | 'density
 /** Highest safe fill for a liquid, % of brim capacity (97 % for unknown/custom liquids). */
 export function maxFillPct(liquidId: string): number {
   return BY_ID.get(liquidId)?.maxFillPct ?? 97;
+}
+
+/** True when the liquid needs a pressurised tank in bulk (liquefied gases). Custom liquids never do. */
+export function needsPressureTank(liquidId: string): boolean {
+  return BY_ID.get(liquidId)?.pressurised === true;
 }
 
 /** Display colour of a liquid (a neutral blue-grey for custom liquids). */

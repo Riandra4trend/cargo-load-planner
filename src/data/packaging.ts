@@ -10,8 +10,10 @@ export interface PackagingPreset {
   tareKg: number;
   shape: Shape;
   note?: string;
-  /** Liquid containers: brim capacity, litres. */
+  /** Liquid containers: brim (overflow) capacity, litres; the max-fill check uses this. */
   capacityL?: number;
+  /** Liquid containers: the nominal fill the container is sold by (default volume in the editor), litres. */
+  nominalL?: number;
 }
 
 const IN = 0.0254;
@@ -73,7 +75,8 @@ export const PACKAGING_PRESETS: Record<PackagingKind, PackagingPreset> = {
     tareKg: 18,
     shape: 'cylinder-upright',
     note: 'Steel drum Ø 585 × 880 mm · ≈ 18 kg',
-    capacityL: 208,
+    capacityL: 216,
+    nominalL: 200,
   },
   ibc: {
     label: 'IBC tote 1000 L',
@@ -82,7 +85,8 @@ export const PACKAGING_PRESETS: Record<PackagingKind, PackagingPreset> = {
     tareKg: 60,
     shape: 'box',
     note: '1200 × 1000 × 1150 mm, integrated pallet base · ≈ 60 kg',
-    capacityL: 1000,
+    capacityL: 1050,
+    nominalL: 1000,
   },
   jerrycan: {
     label: 'Jerrycan 20 L',
@@ -91,7 +95,8 @@ export const PACKAGING_PRESETS: Record<PackagingKind, PackagingPreset> = {
     tareKg: 1.2,
     shape: 'box',
     note: 'HDPE 20 L jerrycan · ≈ 1.2 kg',
-    capacityL: 20,
+    capacityL: 23,
+    nominalL: 20,
   },
   'bulk-liquid': {
     label: 'Bulk liquid (tanker compartment)',

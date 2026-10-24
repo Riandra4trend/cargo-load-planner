@@ -6,6 +6,7 @@ import { toThree } from './coords';
 import { LINE_MATERIALS, MATERIALS, UNIT_BOX, UNIT_PLANE, WHEEL_CYLINDER } from './materials';
 import { boxEdgePoints, CBox, CCyl, CLines, FloorRect } from './prims';
 import { floorLabelTexture } from './textures';
+import { TankModel } from './TankModel';
 import { vehicleLayout, type VehicleLayout } from './vehicleLayout';
 
 const TYRE_W = 0.3;
@@ -18,9 +19,9 @@ export const VehicleModel = memo(function VehicleModel({ vehicle }: { vehicle: V
       <Wheels vehicle={vehicle} layout={layout} />
       {layout.artic ? <Tractor vehicle={vehicle} layout={layout} /> : <RigidCab vehicle={vehicle} layout={layout} />}
       {layout.artic && <TrailerChassis vehicle={vehicle} />}
-      {vehicle.kind === 'flatbed' ? <FlatbedDeck vehicle={vehicle} /> : <CargoBody vehicle={vehicle} />}
-      <ZoneFloor vehicle={vehicle} />
-      <Bays vehicle={vehicle} />
+      {vehicle.kind === 'tanker' ? <TankModel vehicle={vehicle} /> : vehicle.kind === 'flatbed' ? <FlatbedDeck vehicle={vehicle} /> : <CargoBody vehicle={vehicle} />}
+      {vehicle.kind !== 'tanker' && <ZoneFloor vehicle={vehicle} />}
+      {vehicle.kind !== 'tanker' && <Bays vehicle={vehicle} />}
     </group>
   );
 });

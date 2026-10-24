@@ -8,6 +8,7 @@ import { useStore } from '../../state/store';
 import { Button } from '../common/Button';
 import { Menu, type MenuEntry } from './Menu';
 import { HEALTH_DOT, HEALTH_LABEL, vehicleHealth } from './shellFormat';
+import { formatCargoLitres, tankCapacityL } from './tanker';
 
 const presetName = (id: string): string => VEHICLE_PRESETS.find((p) => p.id === id)?.name ?? id;
 
@@ -105,7 +106,16 @@ export function VehicleList() {
                   <span className={`h-2 w-2 shrink-0 rounded-full ${HEALTH_DOT[health]}`} title={HEALTH_LABEL[health]} aria-label={HEALTH_LABEL[health]} role="img" />
                   <span className="truncate text-[13px] font-semibold text-ink">{v.name}</span>
                 </span>
-                <span className="num mt-0.5 block truncate pl-3.5 text-[11px] text-muted">{formatDims(v.cargo, sys, { big: true })}</span>
+                {v.tank ? (
+                  <>
+                    <span className="num mt-0.5 block truncate pl-3.5 text-[11px] text-ink-soft">
+                      {formatCargoLitres(tankCapacityL(v), sys)} · {v.tank.compartments.length} compartment{v.tank.compartments.length === 1 ? '' : 's'}
+                    </span>
+                    <span className="num block truncate pl-3.5 text-[10.5px] text-muted/80">{formatDims(v.cargo, sys, { big: true })} barrel</span>
+                  </>
+                ) : (
+                  <span className="num mt-0.5 block truncate pl-3.5 text-[11px] text-muted">{formatDims(v.cargo, sys, { big: true })}</span>
+                )}
                 <span className="num block truncate pl-3.5 text-[11px] text-muted">
                   {formatMass(ve.axle.cargoKg, sys)} of {formatMass(v.payloadKg, sys)} payload
                 </span>

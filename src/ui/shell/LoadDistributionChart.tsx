@@ -28,6 +28,7 @@ export function LoadDistributionChart({ shown }: { shown: ShownState }) {
   const clipId = `ldc${useId().replace(/[^\w-]/g, '')}`;
   const { vehicleEval: ve, axle, remaining } = shown;
   const v = ve.vehicle;
+  const front = v.tank ? 'tank front' : 'front wall';
   const curve = ve.curve;
   const lenUnit = bigLengthUnit(sys);
   const massUnit = sys === 'metric' ? 't' : 'lb';
@@ -73,7 +74,7 @@ export function LoadDistributionChart({ shown }: { shown: ShownState }) {
           </g>
         ))}
         <text x={W - PAD.r} y={H - 2} textAnchor="end" className="fill-muted" fontSize={8.5}>
-          COG from front wall ({lenUnit})
+          COG from {front} ({lenUnit})
         </text>
         <text x={4} y={PAD.t - 3} className="fill-muted" fontSize={8.5}>
           {sys === 'metric' ? 'payload (t)' : 'payload (1,000 lb)'}
@@ -97,7 +98,7 @@ export function LoadDistributionChart({ shown }: { shown: ShownState }) {
       <p className="mt-1 text-xs leading-relaxed text-ink-soft">
         {cog ? (
           <>
-            Cargo COG <b className="num font-mono font-semibold">{formatLength(cog.x, sys, { big: true })}</b> from the front wall, {formatMass(axle.cargoKg, sys)} aboard; up to{' '}
+            Cargo COG <b className="num font-mono font-semibold">{formatLength(cog.x, sys, { big: true })}</b> from the {front}, {formatMass(axle.cargoKg, sys)} aboard; up to{' '}
             {formatMass(allowedHere, sys)} allowed there ({lowerFirst(limitedHere)}).{' '}
             {remaining.kg > 0 ? (
               <>
@@ -109,7 +110,7 @@ export function LoadDistributionChart({ shown }: { shown: ShownState }) {
           </>
         ) : (
           <>
-            Empty. Best case {formatMass(ve.peak.maxKg, sys)} with the COG {formatLength(ve.peak.x, sys, { big: true })} from the front wall ({lowerFirst(ve.peak.limitedBy)}).
+            Empty. Best case {formatMass(ve.peak.maxKg, sys)} with the COG {formatLength(ve.peak.x, sys, { big: true })} from the {front} ({lowerFirst(ve.peak.limitedBy)}).
           </>
         )}
       </p>

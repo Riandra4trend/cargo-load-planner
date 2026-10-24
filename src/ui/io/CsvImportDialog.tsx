@@ -2,8 +2,23 @@ import { ArrowLeft, ArrowRight, CircleAlert, ClipboardPaste, FileSpreadsheet, In
 import { useCallback, useMemo, useRef, useState, type DragEvent } from 'react';
 import { TEMP_LABELS } from '../../domain/colors';
 import type { UnitSystem } from '../../domain/types';
-import { formatDims, formatWeight, LENGTH_UNITS, WEIGHT_UNITS, type LengthUnit, type WeightUnit } from '../../domain/units';
-import { autoMapColumns, bindNewStops, IMPORT_FIELDS, parseCsvText, rowsToLines, type FieldDef, type FieldMapping, type ImportReportEntry, type ParsedCsv } from '../../io/csvImport';
+import { formatDims, formatLiquidDensity, formatLitres, formatWeight, LENGTH_UNITS, WEIGHT_UNITS, type LengthUnit, type WeightUnit } from '../../domain/units';
+import {
+  autoMapColumns,
+  bindNewStops,
+  DENSITY_UNITS,
+  IMPORT_FIELDS,
+  missingRequiredFields,
+  parseCsvText,
+  rowsToLines,
+  VOLUME_UNITS,
+  type DensityUnit,
+  type FieldDef,
+  type FieldMapping,
+  type ImportReportEntry,
+  type ParsedCsv,
+  type VolumeUnit,
+} from '../../io/csvImport';
 import { useUnitSystem } from '../../state/hooks';
 import { useStore } from '../../state/store';
 import { Button } from '../common/Button';
@@ -19,11 +34,13 @@ const STEPS: { key: Step; label: string }[] = [
 ];
 const PREVIEW_ROWS = 5;
 const NOT_MAPPED = '';
-const GROUPS: FieldDef['group'][] = ['Item', 'Delivery', 'Handling', 'Hazmat', 'Details'];
+const GROUPS: FieldDef['group'][] = ['Item', 'Delivery', 'Handling', 'Liquid', 'Hazmat', 'Details'];
 const DELIMITER_LABEL: Record<ParsedCsv['delimiter'], string> = { ',': 'comma', ';': 'semicolon', '\t': 'tab' };
 
 const defaultLengthUnit = (sys: UnitSystem): LengthUnit => (sys === 'metric' ? 'cm' : 'in');
 const defaultWeightUnit = (sys: UnitSystem): WeightUnit => (sys === 'metric' ? 'kg' : 'lb');
+const defaultVolumeUnit = (sys: UnitSystem): VolumeUnit => (sys === 'metric' ? 'L' : 'gal');
+const defaultDensityUnit = (sys: UnitSystem): DensityUnit => (sys === 'metric' ? 'kg/L' : 'lb/gal');
 
 function ReportList({ entries }: { entries: ImportReportEntry[] }) {
   if (!entries.length) return <p className="rounded-lg bg-ok-soft px-3 py-2 text-xs text-ok">Every row is valid.</p>;
@@ -62,12 +79,18 @@ export function CsvImportDialog() {
   const [mapping, setMapping] = useState<FieldMapping>({});
   const [lengthUnit, setLengthUnit] = useState<LengthUnit>(defaultLengthUnit(sys));
   const [weightUnit, setWeightUnit] = useState<WeightUnit>(defaultWeightUnit(sys));
+  const [volumeUnit, setVolumeUnit] = useState<VolumeUnit>(defaultVolumeUnit(sys));
+  const [densityUnit, setDensityUnit] = useState<DensityUnit>(defaultDensityUnit(sys));
   const [dragOver, setDragOver] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const close = useCallback(() => closeDialog('import'), [closeDialog]);
 
-  const result = useMemo(() => (parsed ? rowsToLines(parsed.rows, mapping, { lengthUnit, weightUnit }, plan) : null), [parsed, mapping, lengthUnit, weightUnit, plan]);
-  const missingRequired = IMPORT_FIELDS.filter((f) => f.required && mapping[f.field] === undefined);
+  const result = useMemo(
+    () => (parsed ? rowsToLines(parsed.rows, mapping, { lengthUnit, weightUnit, volumeUnit, densityUnit }, plan) : null),
+    [parsed, mapping, lengthUnit, weightUnit, volumeUnit, densityUnit, plan],
+  );
+  const missingRequired = missingRequiredFields(mapping);
+  const liquidMapped = mapping.liquid !== undefined;
 
   const readFile = async (file: File) => {
     setFileName(file.name);
@@ -90,6 +113,8 @@ export function CsvImportDialog() {
       setMapping(auto.mapping);
       setLengthUnit(auto.lengthUnit ?? defaultLengthUnit(sys));
       setWeightUnit(auto.weightUnit ?? defaultWeightUnit(sys));
+      setVolumeUnit(auto.volumeUnit ?? defaultVolumeUnit(sys));
+      setDensityUnit(auto.densityUnit ?? defaultDensityUnit(sys));
       setParseError(null);
       setStep('mapping');
     } catch (err) {
@@ -206,7 +231,8 @@ export function CsvImportDialog() {
           {parseError && <p className="rounded-lg bg-bad-soft px-3 py-2 text-xs text-bad">{parseError}</p>}
           <p className="text-xs text-muted">
             Columns are matched automatically (name, SKU, length, width, height, weight, quantity, stop, customer, temperature, UN number, hazmat class and more). Unit suffixes such as
-            “Length (in)” or “weight_kg” are detected; units written in a cell (“48 in”, “500 lb”) override the column unit.
+            “Length (in)”, “weight_kg” or “Volume (gal)” are detected; units written in a cell (“48 in”, “500 lb”, “1000 L”) override the column unit. Liquids: add a liquid column (e.g.
+            diesel, water, milk) with a volume and a container (bulk / tanker, drum, IBC, jerrycan); the weight then follows from the density.
           </p>
         </div>
       )}
@@ -223,6 +249,16 @@ export function CsvImportDialog() {
             <Field label="Weights in" className="w-28">
               <Select value={weightUnit} onChange={setWeightUnit} options={WEIGHT_UNITS.map((u) => ({ value: u, label: u }))} aria-label="Weight unit" />
             </Field>
+            {liquidMapped && (
+              <>
+                <Field label="Volumes in" className="w-24">
+                  <Select value={volumeUnit} onChange={setVolumeUnit} options={VOLUME_UNITS.map((u) => ({ value: u, label: u === 'gal' ? 'US gal' : u }))} aria-label="Volume unit" />
+                </Field>
+                <Field label="Density in" className="w-28">
+                  <Select value={densityUnit} onChange={setDensityUnit} options={DENSITY_UNITS.map((u) => ({ value: u, label: u === 'kg/m3' ? 'kg/m³' : u }))} aria-label="Density unit" />
+                </Field>
+              </>
+            )}
           </div>
           {missingRequired.length > 0 && (
             <p className="rounded-lg bg-bad-soft px-3 py-2 text-xs text-bad">Map a column to: {missingRequired.map((f) => f.label.toLowerCase()).join(', ')}.</p>
@@ -265,7 +301,7 @@ export function CsvImportDialog() {
                     <th className="px-2 py-1.5 font-medium">Row</th>
                     <th className="px-2 py-1.5 font-medium">Item</th>
                     <th className="px-2 py-1.5 font-medium">Qty</th>
-                    <th className="px-2 py-1.5 font-medium">Dimensions</th>
+                    <th className="px-2 py-1.5 font-medium">Size / contents</th>
                     <th className="px-2 py-1.5 font-medium">Weight</th>
                     <th className="px-2 py-1.5 font-medium">Stop</th>
                     <th className="px-2 py-1.5 font-medium">Temp / hazmat</th>
@@ -284,7 +320,16 @@ export function CsvImportDialog() {
                           <>
                             <td className="px-2 py-1.5 text-ink">{line.spec.name}</td>
                             <td className="px-2 py-1.5 font-mono num">{line.quantity}</td>
-                            <td className="whitespace-nowrap px-2 py-1.5 font-mono num">{formatDims(line.spec.dims, sys)}</td>
+                            <td className="whitespace-nowrap px-2 py-1.5 font-mono num">
+                              {line.spec.liquid ? (
+                                <span title={`${line.spec.liquid.name}, ${formatLiquidDensity(line.spec.liquid.densityKgPerL, sys)}`}>
+                                  {formatLitres(line.spec.liquid.volumeL, sys, 0)} {line.spec.liquid.name}
+                                  <span className="text-muted"> · {line.spec.packaging === 'bulk-liquid' ? 'tanker' : formatDims(line.spec.dims, sys)}</span>
+                                </span>
+                              ) : (
+                                formatDims(line.spec.dims, sys)
+                              )}
+                            </td>
                             <td className="whitespace-nowrap px-2 py-1.5 font-mono num">{formatWeight(line.spec.weightKg, sys)}</td>
                             <td className="px-2 py-1.5">
                               {stopName(line.stopId)}

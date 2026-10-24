@@ -1,11 +1,25 @@
 import { describe, expect, it } from 'vitest';
 import { createEmptyPlan } from '../data/emptyPlan';
-import { createSeedPlan } from '../data/seed';
-import { lbToKg, M_PER_IN } from '../domain/units';
+import { createSeedPlan, createTankerSeedPlan, makeSpec } from '../data/seed';
+import { L_PER_US_GAL, lbToKg, M_PER_IN } from '../domain/units';
 import { itemsToCsv } from './csv';
-import { autoMapColumns, bindNewStops, normaliseHazClass, normaliseUnNumber, parseBoolCell, parseCsvText, parseNumberCell, parseTempCell, rowsToLines } from './csvImport';
+import {
+  autoMapColumns,
+  bindNewStops,
+  findLiquid,
+  normaliseHazClass,
+  normaliseUnNumber,
+  parseBoolCell,
+  parseCsvText,
+  parseNumberCell,
+  parseTempCell,
+  rowsToLines,
+  type ImportUnits,
+} from './csvImport';
 import { parsePlanJson } from './planFile';
 import { buildShareUrl, readShareHash } from './share';
+
+const SI: ImportUnits = { lengthUnit: 'm', weightUnit: 'kg', volumeUnit: 'L', densityUnit: 'kg/L' };
 
 describe('parseCsvText', () => {
   it('detects comma, semicolon and tab delimiters', () => {
@@ -92,7 +106,7 @@ describe('rowsToLines', () => {
     const { mapping, lengthUnit, weightUnit } = autoMapColumns(headers);
     expect(lengthUnit).toBe('in');
     expect(weightUnit).toBe('lb');
-    const result = rowsToLines(rows, mapping, { lengthUnit: lengthUnit!, weightUnit: weightUnit! }, plan);
+    const result = rowsToLines(rows, mapping, { ...SI, lengthUnit: lengthUnit!, weightUnit: weightUnit! }, plan);
 
     expect(result.lines).toHaveLength(3);
     expect(result.skipped).toBe(2);
@@ -130,7 +144,7 @@ describe('rowsToLines', () => {
     const plan = createEmptyPlan();
     const { headers, rows } = parseCsvText('name,qty,length,width\nCrate,0,1,1\nCrate,2.5,1,1');
     const { mapping } = autoMapColumns(headers);
-    const result = rowsToLines(rows, mapping, { lengthUnit: 'm', weightUnit: 'kg' }, plan);
+    const result = rowsToLines(rows, mapping, SI, plan);
     expect(result.lines).toHaveLength(0);
     expect(result.report.filter((r) => r.row === 0 && r.level === 'error')).toHaveLength(2);
     expect(result.report.some((r) => r.row === 2 && /Quantity "0"/.test(r.message))).toBe(true);
@@ -143,7 +157,7 @@ describe('rowsToLines', () => {
     const { mapping, lengthUnit, weightUnit } = autoMapColumns(headers);
     expect(lengthUnit).toBe('m');
     expect(weightUnit).toBe('kg');
-    const result = rowsToLines(rows, mapping, { lengthUnit: 'm', weightUnit: 'kg' }, plan);
+    const result = rowsToLines(rows, mapping, SI, plan);
     expect(result.report.filter((r) => r.level === 'error')).toEqual([]);
     expect(result.newStops).toEqual([]);
     expect(result.lines).toHaveLength(plan.lines.length);
@@ -154,6 +168,110 @@ describe('rowsToLines', () => {
       expect(line.stopId).toBe(original.stopId);
       expect(line.priority).toBe(original.priority);
       expect(line.contents).toBe(original.contents);
+    });
+  });
+
+  it('finds library liquids by id, name or alias', () => {
+    expect(['diesel', 'Diesel (solar)', 'SOLAR', 'bensin', 'Crude oil', 'cpo', 'brine', 'LPG'].map((t) => findLiquid(t)?.id)).toEqual([
+      'diesel',
+      'diesel',
+      'diesel',
+      'gasoline',
+      'crude-oil',
+      'palm-oil',
+      'seawater',
+      'lpg',
+    ]);
+    expect(findLiquid('unobtainium')).toBeUndefined();
+  });
+
+  it('imports bulk and packaged liquids: gallons, library data, container defaults and computed weights', () => {
+    const plan = createTankerSeedPlan();
+    const tsv = [
+      'Item\tLiquid\tContainer\tVolume (gal)\tDensity (lb/gal)\tQty\tStop',
+      'Diesel delivery\tsolar\tbulk\t2,000\t\t1\tNew Depot',
+      'Rain water\twater\tIBC\t1000 L\t\t4\t1',
+      '\tSulfuric acid 98 %\tdrum\t\t\t2\t1',
+      'Mystery\tunobtainium\tbulk\t500\t\t1\t1',
+      'Heavy diesel\tdiesel\ttanker\t100\t7.1\t1\t1',
+    ].join('\n');
+    const { headers, rows } = parseCsvText(tsv);
+    const auto = autoMapColumns(headers);
+    expect(auto.volumeUnit).toBe('gal');
+    expect(auto.densityUnit).toBe('lb/gal');
+    const result = rowsToLines(rows, auto.mapping, { ...SI, volumeUnit: auto.volumeUnit!, densityUnit: auto.densityUnit! }, plan);
+
+    expect(result.report.filter((r) => r.row === 0 && r.level === 'error')).toEqual([]);
+    expect(result.rowOfLine).toEqual([2, 3, 4, 6]);
+    const [diesel, water, acid, heavy] = result.lines.map((l) => l.spec);
+
+    expect(diesel.packaging).toBe('bulk-liquid');
+    expect(diesel.liquid).toEqual({ liquidId: 'diesel', name: 'Diesel (solar)', densityKgPerL: 0.84, volumeL: 2000 * L_PER_US_GAL });
+    expect(diesel.weightKg).toBeCloseTo(2000 * L_PER_US_GAL * 0.84, 6);
+    expect(diesel.hazmat).toEqual({ unNumber: 'UN1202', hazClass: '3', packingGroup: 'III' });
+    expect(diesel.dims).toEqual({ l: 1, w: 1, h: 1 });
+    expect(diesel.rotation).toBe('none');
+    expect(diesel.category).toBe('Bulk liquid');
+    expect(result.lines[0].stopId).toBe(result.newStops[0].key);
+
+    expect(water.packaging).toBe('ibc');
+    expect(water.liquid?.volumeL).toBe(1000);
+    expect(water.weightKg).toBe(1000 + 60);
+    expect(water.dims).toEqual({ l: 1.2, w: 1.0, h: 1.15 });
+    expect(water.hazmat).toBeUndefined();
+    expect(result.lines[1].quantity).toBe(4);
+
+    expect(acid.name).toBe('Sulfuric acid 98 %');
+    expect(acid.shape).toBe('cylinder-upright');
+    expect(acid.liquid?.volumeL).toBe(200);
+    expect(acid.weightKg).toBeCloseTo(200 * 1.84 + 18, 6);
+    expect(acid.hazmat?.hazClass).toBe('8');
+
+    expect(heavy.liquid?.densityKgPerL).toBeCloseTo(lbToKg(7.1) / L_PER_US_GAL, 9);
+    expect(result.report.some((r) => r.row === 5 && r.level === 'error' && /not in the liquid library/.test(r.message))).toBe(true);
+  });
+
+  it('round-trips bulk fills, packaged and custom liquids through itemsToCsv', () => {
+    const plan = createTankerSeedPlan();
+    const stopId = plan.stops[0].id;
+    plan.lines.push(
+      {
+        id: 'line-drum',
+        quantity: 3,
+        stopId,
+        priority: 'normal',
+        spec: makeSpec({
+          name: 'Diesel in drums',
+          packaging: 'drum',
+          shape: 'cylinder-upright',
+          dims: { l: 0.585, w: 0.585, h: 0.88 },
+          weightKg: 200 * 0.84 + 18,
+          liquid: { liquidId: 'diesel', name: 'Diesel (solar)', densityKgPerL: 0.84, volumeL: 200 },
+          hazmat: { unNumber: 'UN1202', hazClass: '3', packingGroup: 'III' },
+        }),
+      },
+      {
+        id: 'line-coolant',
+        quantity: 1,
+        stopId,
+        priority: 'urgent',
+        spec: makeSpec({
+          name: 'Coolant concentrate',
+          dims: { l: 0.4, w: 0.3, h: 0.5 },
+          weightKg: 58.5,
+          liquid: { liquidId: 'custom', name: 'Coolant concentrate', densityKgPerL: 1.11, volumeL: 50, containerCapacityL: 60 },
+        }),
+      },
+    );
+    const { headers, rows } = parseCsvText(itemsToCsv(plan));
+    const result = rowsToLines(rows, autoMapColumns(headers).mapping, SI, plan);
+    expect(result.report.filter((r) => r.level === 'error')).toEqual([]);
+    expect(result.lines).toHaveLength(plan.lines.length);
+    result.lines.forEach((line, i) => {
+      expect(line.spec).toEqual(plan.lines[i].spec);
+      expect(line.quantity).toBe(plan.lines[i].quantity);
+      expect(line.stopId).toBe(plan.lines[i].stopId);
+      expect(line.priority).toBe(plan.lines[i].priority);
     });
   });
 });
@@ -180,5 +298,10 @@ describe('plan JSON and share link', () => {
     expect(readShareHash(url.slice(url.indexOf('#')))).toEqual(plan);
     expect(readShareHash('#plan=garbage')).toBeNull();
     expect(readShareHash('#other')).toBeNull();
+  });
+
+  it('round-trips a tanker plan through a share link', () => {
+    const plan = createTankerSeedPlan();
+    expect(readShareHash(buildShareUrl(plan, 'https://example.test/').slice('https://example.test/'.length))).toEqual(plan);
   });
 });

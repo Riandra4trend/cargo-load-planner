@@ -1,7 +1,7 @@
 import { Canvas } from '@react-three/fiber';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Box3, type WebGLRenderer } from 'three';
-import { orientedSize, placementBox, type Box } from '../domain/geometry';
+import { compartmentFill, compartmentOf, isBulkLiquid, orientedSize, placementBox, type Box } from '../domain/geometry';
 import type { Id } from '../domain/types';
 import { axleContributions, axleGroups, computeAxleState } from '../physics';
 import { loadingSequence } from '../sim/sequence';
@@ -19,6 +19,7 @@ import { useSceneUi } from './sceneUi';
 import { colorContext, unitColor, type ColorContext } from './palette';
 import { LoadSimulation, simulationLayout, UnloadSimulation } from './Simulation';
 import { dockLayout, type StagingUnit } from './staging';
+import { TankLayer, type TankFill } from './TankLayer';
 import { VehicleModel } from './VehicleModel';
 import { vehicleLayout } from './vehicleLayout';
 import { ViewportOverlay } from './ViewportOverlay';
@@ -41,6 +42,7 @@ export function Viewport() {
           gl={{ preserveDrawingBuffer: true, antialias: true }}
           onCreated={({ gl }) => {
             glRef.current = gl;
+            gl.localClippingEnabled = true;
           }}
           onPointerMissed={(e) => {
             if (e.type === 'click' && !(e.shiftKey || e.ctrlKey || e.metaKey) && useStore.getState().ui.selection.length) select([]);
@@ -86,14 +88,24 @@ function SceneContent() {
   const layout = useMemo(() => vehicleLayout(vehicle), [vehicle]);
   const animMode = animation.mode !== 'idle' && (animation.vehicleId ?? vehicle.id) === vehicle.id ? animation.mode : 'idle';
 
-  const vehicleItems = useMemo<CargoItem[]>(() => {
-    const out: CargoItem[] = [];
+  // Floor units are drawn as boxes / goods; bulk liquid fills live in tank compartments instead.
+  const { vehicleItems, tankFills } = useMemo(() => {
+    const items: CargoItem[] = [];
+    const fills: TankFill[] = [];
     for (const u of evaluation.units) {
       const p = plan.placements[u.id];
-      if (p?.vehicleId === vehicle.id) out.push({ unit: u, orient: p.orient, box: placementBox(p, u.spec) });
+      if (p?.vehicleId !== vehicle.id) continue;
+      if (p.compartmentId !== undefined || isBulkLiquid(u.spec)) {
+        const c = compartmentOf(vehicle, p.compartmentId);
+        if (c) fills.push({ unit: u, compartment: c, fill: compartmentFill(u.spec, c) });
+      } else items.push({ unit: u, orient: p.orient, box: placementBox(p, u.spec) });
     }
-    return out;
-  }, [evaluation.units, plan.placements, vehicle.id]);
+    return { vehicleItems: items, tankFills: fills };
+  }, [evaluation.units, plan.placements, vehicle]);
+  const fillBoxes = useMemo(
+    () => new Map<Id, Box>(tankFills.map((f) => [f.unit.id, { min: { x: f.compartment.fromX, y: 0, z: 0 }, max: { x: f.compartment.toX, y: vehicle.cargo.w, z: vehicle.cargo.h } }])),
+    [tankFills, vehicle.cargo.w, vehicle.cargo.h],
+  );
 
   const sequence = useMemo(() => (animMode === 'load' ? loadingSequence(plan, vehicle.id) : []), [animMode, plan, vehicle.id]);
 
@@ -141,7 +153,7 @@ function SceneContent() {
     const ghosts: Box[] = [];
     for (const u of evaluation.units) {
       const before = diff.base.placements[u.id];
-      if (before?.vehicleId !== vehicle.id) continue;
+      if (before?.vehicleId !== vehicle.id || isBulkLiquid(u.spec)) continue;
       const after = diff.preview.placements[u.id];
       const moved = !after || after.vehicleId !== before.vehicleId || after.orient !== before.orient || Math.abs(after.pos.x - before.pos.x) > 1e-6 || Math.abs(after.pos.y - before.pos.y) > 1e-6 || Math.abs(after.pos.z - before.pos.z) > 1e-6;
       if (!moved) continue;
@@ -164,7 +176,11 @@ function SceneContent() {
   }, [veval, animMode, animation.step, sequence, vehicle, plan.settings.nearLimit]);
 
   // The dragged unit's problems are shown on its ghost, not as callouts.
-  const calloutBoxes = useMemo(() => new Map(layerItems.map((it) => [it.unit.id, it.box])), [layerItems]);
+  const calloutBoxes = useMemo(() => {
+    const map = new Map(layerItems.map((it) => [it.unit.id, it.box]));
+    for (const [id, b] of fillBoxes) map.set(id, b);
+    return map;
+  }, [layerItems, fillBoxes]);
 
   const fit = useMemo(() => {
     const e = layout.extents;
@@ -194,12 +210,14 @@ function SceneContent() {
     (unitId: Id): Box3 | null => {
       const it = sim.items.find((x) => x.unit.id === unitId) ?? (sim.current?.item.unit.id === unitId ? sim.current.item : undefined);
       if (it) return toBox3(it.box);
+      const fillBox = fillBoxes.get(unitId);
+      if (fillBox) return toBox3(fillBox);
       const p = plan.placements[unitId];
       const u = evaluation.unitById.get(unitId);
       if (p && u && p.vehicleId === vehicle.id) return toBox3(placementBox(p, u.spec));
       return null;
     },
-    [sim, plan.placements, evaluation.unitById, vehicle.id],
+    [sim, plan.placements, evaluation.unitById, vehicle.id, fillBoxes],
   );
 
   // Focus requests for units in another vehicle switch the active vehicle (the camera rig then follows).
@@ -216,7 +234,8 @@ function SceneContent() {
 
   const dragUnit = dragUnitId ? evaluation.unitById.get(dragUnitId) : undefined;
   const leavingColors = useMemo(() => new Map(sim.leaving.map(({ item }) => [item.unit.id, unitColor(item.unit, colorsStable)])), [sim.leaving, colorsStable]);
-  const maxStop = useMemo(() => vehicleItems.reduce((m, it) => Math.max(m, it.unit.stopSeq), 0), [vehicleItems]);
+  const maxStop = useMemo(() => [...vehicleItems, ...tankFills].reduce((m, it) => Math.max(m, it.unit.stopSeq), 0), [vehicleItems, tankFills]);
+  const fillStep = animMode === 'load' && !!sequence[animation.step]?.compartmentId;
 
   if (!veval) return null;
   return (
@@ -239,6 +258,25 @@ function SceneContent() {
         look={look}
       />
       {dragUnit && <DragGhost spec={dragUnit.spec} color={unitColor(dragUnit, colorsStable)} />}
+      {vehicle.kind === 'tanker' && (
+        <TankLayer
+          vehicle={vehicle}
+          fills={tankFills}
+          colors={colorsStable}
+          highlights={highlights}
+          stops={plan.stops}
+          customers={plan.customers}
+          units={units}
+          animMode={animMode}
+          step={animation.step}
+          playing={animation.playing}
+          speed={animation.speed}
+          sequence={sequence}
+          unloadFrom={unloadFrom}
+          dockX={dock.wallX}
+          interactive={animMode === 'idle' && !diff && !drag}
+        />
+      )}
       {diffInfo && <DiffGhosts boxes={diffInfo.ghosts} />}
       {shownAxle && <AxleLabels vehicle={vehicle} axle={shownAxle} groupX={layout.groupX} units={units} />}
       {shownAxle?.cog && <CogMarker cog={shownAxle.cog} vehicle={vehicle} />}
@@ -253,6 +291,7 @@ function SceneContent() {
           speed={animation.speed}
           color={sim.current ? unitColor(sim.current.item.unit, colorsStable) : null}
           realistic={look === 'realistic'}
+          waiting={fillStep}
         />
       )}
       {animMode === 'unload' && (

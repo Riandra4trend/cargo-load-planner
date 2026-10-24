@@ -2,15 +2,17 @@ import { Plus, Siren, Trash2, TriangleAlert } from 'lucide-react';
 import { useCallback, useState } from 'react';
 import { makeSpec } from '../../data/seed';
 import { TEMP_LABELS } from '../../domain/colors';
+import { isBulkLiquid, unitIdOf } from '../../domain/geometry';
 import type { CargoLine, Dims, Id, ItemSpec, TempClass } from '../../domain/types';
-import { formatDims, formatWeight, itemLengthUnit, weightUnit } from '../../domain/units';
+import { formatDims, formatLitres, formatWeight, itemLengthUnit, weightUnit } from '../../domain/units';
 import { useStore } from '../../state/store';
 import { Button, IconButton } from '../common/Button';
-import { Field, LengthInput, NumberInput, Select, TextInput, Toggle, WeightInput } from '../common/fields';
+import { Field, inputClass, LengthInput, NumberInput, Select, TextInput, Toggle, WeightInput } from '../common/fields';
 import { Modal } from '../common/Modal';
 import { fitVehicle } from './itemChecks';
+import { placeOnVehicle, targetVehicleId } from './placement';
 import { StopPicker } from './StopPicker';
-import { useAllTemplates } from './TemplatePicker';
+import { TEMPLATE_GROUPS, templateGroup, useAllTemplates } from './TemplatePicker';
 
 interface TemplateRow {
   key: number;
@@ -105,9 +107,16 @@ export function UrgentOrderDialog() {
       return { spec: specOf(r)!, quantity: r.quantity, contents: template?.contents, stopId, priority: 'urgent', addedAt };
     });
     const ids = addLines(lines);
+    // Bulk fills go straight into a free tanker compartment; the stable re-plan then keeps them there.
+    let filled = 0;
+    lines.forEach((l, i) => {
+      if (!isBulkLiquid(l.spec)) return;
+      const vehicleId = targetVehicleId(l.spec);
+      if (vehicleId) filled += placeOnVehicle(Array.from({ length: l.quantity }, (_, k) => unitIdOf(ids[i], k)), vehicleId);
+    });
     setHighlightLines(ids);
     closeDialog('urgent');
-    toast(`Urgent order: ${totalUnits} unit${totalUnits === 1 ? '' : 's'} added, re-planning…`, 'info');
+    toast(`Urgent order: ${totalUnits} unit${totalUnits === 1 ? '' : 's'} added${filled ? ` (${filled} tanker fill${filled === 1 ? '' : 's'} assigned)` : ''}, re-planning…`, 'info');
     startOptimise({ keepExisting: true });
   };
 
@@ -139,12 +148,26 @@ export function UrgentOrderDialog() {
                 <div className="flex items-end gap-2">
                   {r.kind === 'template' ? (
                     <Field label={`Item ${i + 1} · template`} className="flex-1">
-                      <Select
+                      <select
                         value={r.templateId}
-                        onChange={(templateId) => patchRow(r.key, { templateId })}
-                        options={[{ value: '', label: 'Choose a template…' }, ...templates.map((t) => ({ value: t.id, label: `${t.spec.name}${t.builtIn ? '' : ' (saved)'}` }))]}
+                        onChange={(e) => patchRow(r.key, { templateId: e.target.value })}
                         aria-label={`Template for item ${i + 1}`}
-                      />
+                        className={`${inputClass} pr-7`}
+                      >
+                        <option value="">Choose a template…</option>
+                        {TEMPLATE_GROUPS.map((g) => {
+                          const items = templates.filter((t) => templateGroup(t) === g);
+                          return items.length ? (
+                            <optgroup key={g} label={g}>
+                              {items.map((t) => (
+                                <option key={t.id} value={t.id}>
+                                  {t.spec.name}
+                                </option>
+                              ))}
+                            </optgroup>
+                          ) : null;
+                        })}
+                      </select>
                     </Field>
                   ) : (
                     <Field label={`Item ${i + 1} · custom`} className="flex-1">
@@ -160,7 +183,7 @@ export function UrgentOrderDialog() {
                 </div>
                 {spec && (
                   <p className="mt-1.5 font-mono num text-xs text-muted">
-                    {formatDims(spec.dims, sys)} · {formatWeight(spec.weightKg, sys)} · {TEMP_LABELS[spec.temp]}
+                    {spec.liquid ? `${formatLitres(spec.liquid.volumeL, sys, 0)} ${spec.liquid.name}${isBulkLiquid(spec) ? ' · tanker fill' : ''}` : formatDims(spec.dims, sys)} · {formatWeight(spec.weightKg, sys)} · {TEMP_LABELS[spec.temp]}
                     {spec.hazmat ? ` · ${spec.hazmat.unNumber} (class ${spec.hazmat.hazClass})` : ''}
                   </p>
                 )}

@@ -1,9 +1,10 @@
-import { Boxes, ClipboardCheck, Fuel, Gauge, LayoutGrid, Ruler, Weight } from 'lucide-react';
+import { Boxes, ClipboardCheck, Droplets, Fuel, Gauge, LayoutGrid, Ruler, Weight } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { bigLengthUnit, formatConsumption, formatLength, formatMass, formatMoney, formatNumber, formatPercent, fromMetres, litreParts, massParts } from '../../domain/units';
 import { useActiveVehicleEval, useEvaluation, useUnitSystem } from '../../state/hooks';
 import { Card } from '../common/Card';
 import { lowerFirst } from './shellFormat';
+import { formatCargoLitres } from './tanker';
 
 function Kpi({ icon, label, value, unit, sub, tone = 'neutral' }: { icon: ReactNode; label: string; value: string; unit?: string; sub: ReactNode; tone?: 'neutral' | 'bad' | 'ok' }) {
   return (
@@ -43,7 +44,7 @@ export function KpiCards() {
   const currency = evaluation.plan.settings.currency;
 
   return (
-    <section aria-label={`Key figures${multi ? ` for ${v.name}` : ''}`} className="grid shrink-0 grid-cols-2 gap-3 md:grid-cols-4 2xl:grid-cols-7">
+    <section aria-label={`Key figures${multi ? ` for ${v.name}` : ''}`} className={`grid shrink-0 grid-cols-2 gap-3 ${v.tank ? 'md:grid-cols-3 2xl:grid-cols-6' : 'md:grid-cols-4 2xl:grid-cols-7'}`}>
       <Kpi icon={<Weight />} label="Total cargo weight" value={cargoValue} unit={cargoUnit} sub={`${formatPercent(ve.fill.weight)} of the ${formatMass(v.payloadKg, sys)} payload`} />
       <Kpi
         icon={<Gauge />}
@@ -53,32 +54,54 @@ export function KpiCards() {
         tone={broken > 0 ? 'bad' : 'neutral'}
         sub={broken > 0 ? `${broken} rule${broken === 1 ? '' : 's'} broken` : `the ${lowerFirst(ve.remaining.limitedBy)} limits it here`}
       />
-      <Kpi
-        icon={<Boxes />}
-        label="Fill volume & weight"
-        value={`${formatPercent(ve.fill.volume)} · ${formatPercent(ve.fill.weight)}`}
-        sub={`${ve.fill.units} unit${ve.fill.units === 1 ? '' : 's'} in ${formatLength(ve.fill.usedLength, sys, { big: true, digits: 1 })}`}
-      />
-      <Kpi
-        icon={<Ruler />}
-        label="Loading metres"
-        value={formatNumber(fromMetres(ve.fill.ldm, lenUnit), 1)}
-        unit={sys === 'metric' ? 'ldm' : 'ft'}
-        sub={`of ${formatLength(v.cargo.l, sys, { big: true, digits: 1 })} floor · ${formatPercent(ve.fill.ldm / v.cargo.l)}`}
-      />
-      <Kpi
-        icon={<LayoutGrid />}
-        label="Active load bays"
-        value={`${occupied.length} / ${ve.bays.length}`}
-        unit="bays"
-        sub={occupied.length ? `fullest ${fullest.label} at ${formatPercent(fullest.fill)}` : 'no bays in use'}
-      />
+      {v.tank ? (
+        <Kpi
+          icon={<Droplets />}
+          label="Tank volume & weight"
+          value={litreParts(ve.fill.placedVolume * 1000, sys, 0)[0]}
+          unit={`/ ${formatCargoLitres(ve.fill.usableVolume * 1000, sys)}`}
+          sub={`${formatPercent(ve.fill.volume)} of capacity · ${formatPercent(ve.fill.weight)} of payload`}
+        />
+      ) : (
+        <Kpi
+          icon={<Boxes />}
+          label="Fill volume & weight"
+          value={`${formatPercent(ve.fill.volume)} · ${formatPercent(ve.fill.weight)}`}
+          sub={`${ve.fill.units} unit${ve.fill.units === 1 ? '' : 's'} in ${formatLength(ve.fill.usedLength, sys, { big: true, digits: 1 })}`}
+        />
+      )}
+      {v.tank ? (
+        <Kpi
+          icon={<LayoutGrid />}
+          label="Compartments"
+          value={`${occupied.length} / ${ve.bays.length}`}
+          unit="used"
+          sub={occupied.length ? `fullest ${fullest.label} at ${formatPercent(fullest.fill)}` : 'all compartments empty'}
+        />
+      ) : (
+        <>
+          <Kpi
+            icon={<Ruler />}
+            label="Loading metres"
+            value={formatNumber(fromMetres(ve.fill.ldm, lenUnit), 1)}
+            unit={sys === 'metric' ? 'ldm' : 'ft'}
+            sub={`of ${formatLength(v.cargo.l, sys, { big: true, digits: 1 })} floor · ${formatPercent(ve.fill.ldm / v.cargo.l)}`}
+          />
+          <Kpi
+            icon={<LayoutGrid />}
+            label="Active load bays"
+            value={`${occupied.length} / ${ve.bays.length}`}
+            unit="bays"
+            sub={occupied.length ? `fullest ${fullest.label} at ${formatPercent(fullest.fill)}` : 'no bays in use'}
+          />
+        </>
+      )}
       <Kpi
         icon={<ClipboardCheck />}
         label="Orders loaded"
         value={`${evaluation.orders.loaded} of ${evaluation.orders.total}`}
         tone={unplaced > 0 ? 'bad' : evaluation.orders.total > 0 ? 'ok' : 'neutral'}
-        sub={unplaced > 0 ? `${unplaced} unit${unplaced === 1 ? '' : 's'} not loaded` : evaluation.orders.total > 0 ? 'every unit is on a vehicle' : 'no orders yet'}
+        sub={unplaced > 0 ? `${unplaced} ${v.tank ? 'fill' : 'unit'}${unplaced === 1 ? '' : 's'} not loaded` : evaluation.orders.total > 0 ? `every ${v.tank ? 'fill' : 'unit'} is on a vehicle` : 'no orders yet'}
       />
       <Kpi
         icon={<Fuel />}

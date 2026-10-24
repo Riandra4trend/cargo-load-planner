@@ -167,6 +167,13 @@ export const isHazmatRelevant = (spec: ItemSpec): boolean => !!spec.hazmat || sp
 
 const TOXIC_CLASSES: Record<string, true> = { '6.1': true, '6.2': true };
 
+/** Which of two units is toxic or infectious (classes 6.1/6.2) while the other is food, or null. */
+export function toxicFoodPair(a: ItemSpec, b: ItemSpec): 'a' | 'b' | null {
+  if (a.hazmat && TOXIC_CLASSES[a.hazmat.hazClass] && b.isFood) return 'a';
+  if (b.hazmat && TOXIC_CLASSES[b.hazmat.hazClass] && a.isFood) return 'b';
+  return null;
+}
+
 export type HazmatIssue = { rule: 'never' } | { rule: 'separate'; required: number } | { rule: 'food'; required: number; toxic: 'a' | 'b' };
 
 /** Segregation issue between two units at a given distance, or null when they may travel like this. */
@@ -177,8 +184,8 @@ export function hazmatIssue(s: PlanSettings, a: ItemSpec, b: ItemSpec, distance:
     if (rule === 'separate' && distance < s.hazmatSeparationM - EPS) return { rule: 'separate', required: s.hazmatSeparationM };
   }
   if (distance < s.foodSeparationM - EPS) {
-    if (a.hazmat && TOXIC_CLASSES[a.hazmat.hazClass] && b.isFood) return { rule: 'food', required: s.foodSeparationM, toxic: 'a' };
-    if (b.hazmat && TOXIC_CLASSES[b.hazmat.hazClass] && a.isFood) return { rule: 'food', required: s.foodSeparationM, toxic: 'b' };
+    const toxic = toxicFoodPair(a, b);
+    if (toxic) return { rule: 'food', required: s.foodSeparationM, toxic };
   }
   return null;
 }

@@ -1,5 +1,5 @@
-import { CircleAlert, Info, ListChecks, OctagonAlert, PackageOpen, TriangleAlert, Wand2 } from 'lucide-react';
-import type { Severity, Violation } from '../../domain/types';
+import { CircleAlert, Container, Info, ListChecks, OctagonAlert, PackageOpen, TriangleAlert, Waves, Wand2 } from 'lucide-react';
+import type { Severity, Violation, ViolationKind } from '../../domain/types';
 import { useEvaluation } from '../../state/hooks';
 import { useStore } from '../../state/store';
 import { Button } from '../common/Button';
@@ -10,13 +10,19 @@ import { SEVERITY_LABEL, SEVERITY_ORDER, stageShort } from './shellFormat';
 
 const ICON: Record<Severity, typeof Info> = { error: OctagonAlert, warning: TriangleAlert, info: Info };
 const TONE: Record<Severity, string> = { error: 'text-bad', warning: 'text-warn', info: 'text-info' };
+/** Kind-specific icon and short title for tanker checks. */
+const KIND_INFO: Partial<Record<ViolationKind, { icon: typeof Info; title: string }>> = {
+  tank: { icon: Container, title: 'Tank rule' },
+  surge: { icon: Waves, title: 'Liquid surge' },
+};
 
 function ViolationRow({ v }: { v: Violation }) {
   const select = useStore((s) => s.select);
   const requestFocus = useStore((s) => s.requestFocus);
   const applyFix = useStore((s) => s.applyFix);
   const toast = useStore((s) => s.toast);
-  const Icon = ICON[v.severity];
+  const kind = KIND_INFO[v.kind];
+  const Icon = kind?.icon ?? ICON[v.severity];
   const focusable = v.unitIds.length > 0;
   return (
     <li className="group flex items-start gap-2 rounded-lg px-1.5 py-1.5 -mx-1.5 hover:bg-black/[0.03]">
@@ -31,6 +37,7 @@ function ViolationRow({ v }: { v: Violation }) {
         className="min-w-0 flex-1 rounded text-left text-xs leading-snug text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-default"
         title={focusable ? 'Select and focus the units involved' : undefined}
       >
+        {kind && <span className={`mr-1 font-semibold ${TONE[v.severity]}`}>{kind.title}:</span>}
         {v.message}
         {v.stage !== undefined && (
           <Chip tone={v.stage === 0 ? 'neutral' : 'info'} className="ml-1.5 align-[1px]">
