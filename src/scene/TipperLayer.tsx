@@ -9,6 +9,7 @@ import { maxLegalFill, type MassPoint } from '../physics';
 import type { LoadStep } from '../sim/sequence';
 import { useStore } from '../state/store';
 import type { CargoHighlights } from './CargoLayer';
+import { dropInProgress, RISE_MS } from './dropIn';
 import { setThree, toThree } from './coords';
 import { SceneLabel } from './labels';
 import { MATERIALS, UNIT_BOX, UNIT_CYLINDER } from './materials';
@@ -101,7 +102,8 @@ export const TipperLayer = memo(function TipperLayer(props: TipperLayerProps) {
   const il = l - 0.02;
   const iw = w - 0.02;
   useFrame((_, delta) => {
-    let current = fill?.fill ?? 0;
+    // Idle: a freshly added fill rises into the body.
+    let current = fill ? fill.fill * dropInProgress(fill.unit.id, performance.now(), RISE_MS) : 0;
     let angle = 0;
     let out = 0;
     if (animMode === 'load' && fill) {

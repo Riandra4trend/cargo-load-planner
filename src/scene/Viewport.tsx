@@ -13,6 +13,7 @@ import { CargoLayer, type CargoHighlights, type CargoItem, type CargoTween } fro
 import { vecToThree } from './coords';
 import { DockScene } from './DockScene';
 import { DragGhost, useDragController } from './DragController';
+import { DropGhostView, useCargoDrops } from './DropController';
 import { LabelContext, LabelLayer, LabelProjector, LabelStore } from './labels';
 import { Lighting } from './Lighting';
 import { useSceneUi } from './sceneUi';
@@ -26,6 +27,8 @@ import { vehicleLayout } from './vehicleLayout';
 import { ViewportOverlay } from './ViewportOverlay';
 
 const EMPTY_SET: ReadonlySet<Id> = new Set();
+/** Body colour of the ghost shown while palette / table cargo is dragged over the truck. */
+const DROP_GHOST_COLOR = '#f59e0b';
 
 const toBox3 = (b: Box): Box3 => new Box3().setFromPoints([vecToThree(b.min), vecToThree(b.max)]);
 
@@ -231,6 +234,7 @@ function SceneContent() {
   }, [focus]);
 
   const onUnitPointerDown = useDragController(vehicle, animMode === 'idle' && !diff);
+  const dropPreview = useCargoDrops(vehicle, animMode === 'idle' && !diff);
   const onUnitHover = useCallback((id: Id | null) => setHover(id), [setHover]);
 
   const dragUnit = dragUnitId ? evaluation.unitById.get(dragUnitId) : undefined;
@@ -260,6 +264,7 @@ function SceneContent() {
         look={look}
       />
       {dragUnit && <DragGhost spec={dragUnit.spec} color={unitColor(dragUnit, colorsStable)} />}
+      <DropGhostView preview={dropPreview} color={DROP_GHOST_COLOR} />
       {vehicle.kind === 'tipper' && (
         <TipperLayer
           vehicle={vehicle}

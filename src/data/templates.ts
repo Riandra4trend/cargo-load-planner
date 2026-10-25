@@ -188,20 +188,26 @@ export const BUILT_IN_TEMPLATES: ItemTemplate[] = [
   tpl('gasoline-jerrycan', packagedLiquid('gasoline', 'jerrycan', { name: 'Gasoline jerrycan 20 L', sku: 'FUE-1203', origin: 'Indonesia', stackable: true, maxLoadOnTopKg: 60, maxStackLayers: 3 }), '20 L'),
   tpl('water-bottles', bottledWater(), `${BOTTLES} × ${BOTTLE_L} L bottles`),
 
-  // Liquids: bulk tanker fills (largest legal fill of the preset compartments at the liquid's max fill) --
-  tpl('diesel-bulk', makeBulkSpec('diesel', 7700, { name: 'Diesel, bulk 7,700 L', sku: 'BLK-1202', category: 'Liquids' }), '7,700 L'),
-  tpl('gasoline-bulk', makeBulkSpec('gasoline', 5800, { name: 'Gasoline, bulk 5,800 L', sku: 'BLK-1203', category: 'Liquids' }), '5,800 L'),
-  tpl('water-bulk', makeBulkSpec('water', 7800, { name: 'Water, bulk 7,800 L', sku: 'BLK-0001', category: 'Liquids' }), '7,800 L'),
-  tpl('milk-bulk', makeBulkSpec('milk', 7800, { name: 'Milk, bulk 7,800 L (chilled)', sku: 'BLK-0103', category: 'Liquids' }), '7,800 L'),
-  tpl('palm-oil-bulk', makeBulkSpec('palm-oil', 7700, { name: 'Palm oil, bulk 7,700 L', sku: 'BLK-0910', category: 'Liquids' }), '7,700 L'),
+  // Liquids: bulk tanker fills. The volume is the default fill (the largest legal fill of the preset
+  // compartments at the liquid's max fill); names carry no volume because the palette and editor change it.
+  tpl('diesel-bulk', makeBulkSpec('diesel', 7700, { name: 'Diesel (bulk)', sku: 'BLK-1202', category: 'Liquids' })),
+  tpl('gasoline-bulk', makeBulkSpec('gasoline', 5800, { name: 'Gasoline (bulk)', sku: 'BLK-1203', category: 'Liquids' })),
+  tpl('water-bulk', makeBulkSpec('water', 7800, { name: 'Water (bulk)', sku: 'BLK-0001', category: 'Liquids' })),
+  tpl('milk-bulk', makeBulkSpec('milk', 7800, { name: 'Milk (bulk, chilled)', sku: 'BLK-0103', category: 'Liquids' })),
+  tpl('palm-oil-bulk', makeBulkSpec('palm-oil', 7700, { name: 'Palm oil (bulk)', sku: 'BLK-0910', category: 'Liquids' })),
 
   // Dry bulk: dump-truck loads, each legal on an empty tronton dump truck (6×4, 15 t payload) -------
-  tpl('sand-wet-bulk', makeBulkSpec('sand-wet', 7800, { name: 'Sand (wet), 7.8 m³ tronton load', sku: 'AGG-1900', category: 'Dry bulk' }), '7.8 m³'),
-  tpl('sand-dry-bulk', makeBulkSpec('sand-dry', 9000, { name: 'Sand (dry), 9 m³', sku: 'AGG-1600', category: 'Dry bulk' }), '9 m³'),
-  tpl('gravel-bulk', makeBulkSpec('gravel', 9000, { name: 'Gravel / split, 9 m³', sku: 'AGG-1550', category: 'Dry bulk' }), '9 m³'),
-  tpl('soil-bulk', makeBulkSpec('soil', 11000, { name: 'Soil (loose), 11 m³', sku: 'AGG-1300', category: 'Dry bulk' }), '11 m³'),
-  tpl('coal-bulk', makeBulkSpec('coal', 16000, { name: 'Coal, 16 m³', sku: 'MIN-0850', category: 'Dry bulk' }), '16 m³'),
-  tpl('nickel-ore-bulk', makeBulkSpec('nickel-ore', 9000, { name: 'Nickel ore, 9 m³', sku: 'MIN-1600', category: 'Dry bulk' }), '9 m³'),
-  tpl('palm-ffb-bulk', makeBulkSpec('palm-ffb', 16000, { name: 'Palm fruit bunches (TBS), 16 m³', sku: 'AGR-0500', category: 'Dry bulk' }), '16 m³'),
-  tpl('paddy-bulk', makeBulkSpec('paddy', 16000, { name: 'Paddy (gabah), 16 m³', sku: 'AGR-0580', category: 'Dry bulk' }), '16 m³'),
+  tpl('sand-wet-bulk', makeBulkSpec('sand-wet', 7800, { name: 'Sand, wet (bulk)', sku: 'AGG-1900', category: 'Dry bulk' })),
+  tpl('sand-dry-bulk', makeBulkSpec('sand-dry', 9000, { name: 'Sand, dry (bulk)', sku: 'AGG-1600', category: 'Dry bulk' })),
+  tpl('gravel-bulk', makeBulkSpec('gravel', 9000, { name: 'Gravel / split (bulk)', sku: 'AGG-1550', category: 'Dry bulk' })),
+  tpl('soil-bulk', makeBulkSpec('soil', 11000, { name: 'Soil, loose (bulk)', sku: 'AGG-1300', category: 'Dry bulk' })),
+  tpl('coal-bulk', makeBulkSpec('coal', 16000, { name: 'Coal (bulk)', sku: 'MIN-0850', category: 'Dry bulk' })),
+  tpl('nickel-ore-bulk', makeBulkSpec('nickel-ore', 9000, { name: 'Nickel ore (bulk)', sku: 'MIN-1600', category: 'Dry bulk' })),
+  tpl('palm-ffb-bulk', makeBulkSpec('palm-ffb', 16000, { name: 'Palm fruit bunches, TBS (bulk)', sku: 'AGR-0500', category: 'Dry bulk' })),
+  tpl('paddy-bulk', makeBulkSpec('paddy', 16000, { name: 'Paddy, gabah (bulk)', sku: 'AGR-0580', category: 'Dry bulk' })),
 ];
+
+/** A built-in or user-saved template by id (user library first), e.g. to resolve a dragged template card. */
+export function templateById(id: string, library: readonly ItemTemplate[]): ItemTemplate | undefined {
+  return library.find((t) => t.id === id) ?? BUILT_IN_TEMPLATES.find((t) => t.id === id);
+}

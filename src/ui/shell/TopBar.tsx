@@ -14,11 +14,12 @@ import {
   Link2,
   Loader2,
   PanelLeft,
-  Plus,
+  PackagePlus,
   Printer,
   Redo2,
   Route,
   Settings,
+  Siren,
   Sparkles,
   Undo2,
   Upload,
@@ -209,6 +210,8 @@ export function TopBar({ sidebarOpen, onToggleSidebar }: { sidebarOpen: boolean;
   const undo = useStore((s) => s.undo);
   const redo = useStore((s) => s.redo);
   const openDialog = useStore((s) => s.openDialog);
+  const paletteOpen = useStore((s) => s.ui.paletteOpen);
+  const setPaletteOpen = useStore((s) => s.setPaletteOpen);
   const startLoadSimulation = useLoadSimulation();
 
   return (
@@ -225,11 +228,20 @@ export function TopBar({ sidebarOpen, onToggleSidebar }: { sidebarOpen: boolean;
       <MetaChips />
       <div className="ml-auto flex flex-wrap items-center gap-2">
         <SegmentedControl label="View" value={view} onChange={setView} options={VIEWS} />
-        <Button icon={<Plus className="h-4 w-4" />} onClick={() => openDialog('urgent', true)} title="Add an urgent order and re-optimise">
-          <span className="hidden xl:inline">Urgent order</span>
+        <Button
+          icon={<PackagePlus className="h-4 w-4" />}
+          aria-pressed={paletteOpen}
+          onClick={() => setPaletteOpen(!paletteOpen)}
+          title="Add cargo to the truck (A)"
+          className={`!border-accent !text-accent-strong hover:!bg-accent-soft ${paletteOpen ? '!bg-accent-soft' : ''}`}
+        >
+          Add cargo
+        </Button>
+        <Button icon={<Siren className="h-4 w-4" />} onClick={() => openDialog('urgent', true)} title="Add an urgent order and re-optimise">
+          <span className="hidden min-[1800px]:inline">Urgent order</span>
         </Button>
         <Button icon={<Forklift className="h-4 w-4" />} onClick={startLoadSimulation} title="Animate the forklift loading sequence at the dock">
-          <span className="hidden xl:inline">Load at dock</span>
+          <span className="hidden min-[1800px]:inline">Load at dock</span>
         </Button>
         <OptimiseButton />
         <span className="hidden h-6 w-px bg-line md:block" aria-hidden />

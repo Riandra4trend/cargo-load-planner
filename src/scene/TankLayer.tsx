@@ -11,6 +11,7 @@ import { useStore } from '../state/store';
 import type { CargoHighlights } from './CargoLayer';
 import { setThree, toThree } from './coords';
 import { pointerToCargoPlane } from './DragController';
+import { dropInProgress, RISE_MS } from './dropIn';
 import { interaction, syncControls } from './interaction';
 import { SceneLabel } from './labels';
 import { MATERIALS, UNIT_PLANE } from './materials';
@@ -202,6 +203,7 @@ export const TankLayer = memo(function TankLayer(props: TankLayerProps) {
     }
     if (animMode === 'unload') elapsed.current += delta * speed;
     const drain = Math.min(1, elapsed.current / (UNLOAD_STEP_S * 0.75));
+    const now = performance.now();
     for (const c of compartments) {
       const ref = levels.get(c.id);
       const f = byCompartment.get(c.id);
@@ -213,7 +215,7 @@ export const TankLayer = memo(function TankLayer(props: TankLayerProps) {
       } else if (animMode === 'unload') {
         const seq = f.unit.stopSeq;
         ref.current = seq > step ? f.fill : seq <= unloadFrom ? 0 : f.fill * (1 - drain);
-      } else ref.current = f.fill;
+      } else ref.current = f.fill * dropInProgress(f.unit.id, now, RISE_MS);
     }
   });
 

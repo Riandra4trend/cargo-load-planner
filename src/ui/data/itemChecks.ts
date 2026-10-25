@@ -309,3 +309,38 @@ export function splitAdvice(plan: Plan, line: CargoLine): SplitAdvice | null {
   if (!legal || !(legal.litres > 0) || m.volumeL <= legal.litres + EPS) return null;
   return { ...splitLegalLoads(m.volumeL, legal.litres), legalL: legal.litres, limitedBy: legal.limitedBy, vehicleName: legal.vehicle.name };
 }
+
+export interface BulkCardDefault {
+  /** Suggested litres per fill: the template volume, capped at the best free compartment's legal maximum. */
+  volumeL: number;
+  /** Best free compartment of the vehicle and its legal maximum for this material (on top of the cargo aboard). */
+  legal?: { litres: number; limitedBy: string; label: string; pctOfCapacity: number };
+  /** Why the vehicle cannot take the material ("Needs a tanker", "Needs a food-grade tank", "No free compartment"). */
+  problem?: string;
+}
+
+/**
+ * Default volume for a bulk template card in the cargo palette: when the vehicle can carry the material,
+ * the template volume capped at the largest legal fill of its free compartments (maxLegalFill with the
+ * cargo already aboard); otherwise the template volume with the reason it does not fit.
+ */
+export function bulkCardDefault(plan: Plan, vehicle: Vehicle, spec: ItemSpec): BulkCardDefault {
+  const m = spec.material;
+  const volumeL = m?.volumeL ?? 0;
+  if (!m || !isBulk(spec)) return { volumeL };
+  if (!vehicleSuits(spec, vehicle)) return { volumeL, problem: m.state === 'solid' ? 'Needs a dump truck' : 'Needs a tanker' };
+  // Compatibility (pressure, food grade, insulation) independent of size: check a 1-litre fill.
+  const compat = fitVehicle({ ...spec, weightKg: m.densityKgPerL, material: { ...m, volumeL: 1 } }, vehicle, plan.settings);
+  if (!compat.fits) return { volumeL, problem: capitalise(compat.reason ?? 'does not fit') };
+  const used = new Set(Object.values(plan.placements).filter((p) => p.vehicleId === vehicle.id && p.compartmentId).map((p) => p.compartmentId));
+  const others = evaluatePlan(plan).byVehicle[vehicle.id]?.points ?? [];
+  let best: BulkCardDefault['legal'];
+  for (const c of vehicle.bulk!.compartments) {
+    if (used.has(c.id)) continue;
+    const fill = maxLegalFill(vehicle, others, c, m);
+    if (!best || fill.litres > best.litres) best = { litres: fill.litres, limitedBy: fill.limitedBy, label: c.label, pctOfCapacity: (fill.litres / c.capacityL) * 100 };
+  }
+  if (!best) return { volumeL, problem: 'No free compartment' };
+  if (best.litres < 1) return { volumeL, problem: `No legal room left (${best.limitedBy.toLowerCase()})` };
+  return { volumeL: Math.min(volumeL, best.litres), legal: best };
+}

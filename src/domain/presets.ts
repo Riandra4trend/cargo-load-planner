@@ -8,11 +8,29 @@ import type { AxleGroup, FuelProfile, Compartment, TempZone, Vehicle } from './t
  * can carry its rated payload (or its road-limited maximum) legally inside some COG window;
  * physics tests assert this.
  */
+/** Vehicle type, used to group the preset picker. */
+export type PresetCategory = 'truck' | 'van' | 'reefer' | 'semi' | 'flatbed' | 'container' | 'tanker' | 'tipper';
+
+/** Picker groups in display order. */
+export const PRESET_CATEGORIES: { id: PresetCategory; label: string }[] = [
+  { id: 'truck', label: 'Box & wingbox trucks' },
+  { id: 'van', label: 'Vans & pick-ups' },
+  { id: 'reefer', label: 'Refrigerated trucks' },
+  { id: 'semi', label: 'Semi-trailers' },
+  { id: 'container', label: 'Containers' },
+  { id: 'tanker', label: 'Tankers' },
+  { id: 'tipper', label: 'Dump trucks' },
+  { id: 'flatbed', label: 'Flatbeds' },
+];
+
 export interface VehiclePresetInfo {
   id: string;
   name: string;
   region: Vehicle['region'];
+  category: PresetCategory;
   summary: string;
+  /** Extra search terms, English and Indonesian ("tangki air", "kontainer", "pasir"). */
+  keywords: string[];
 }
 
 const US_STEER_MAX = lbToKg(12_000);
@@ -672,33 +690,95 @@ const PRESETS: Record<string, () => PresetBody> = {
       rear: { id: 'rear', label: 'Rear tandem', x: 3.9, count: 2, spread: 1.3, tareKg: 6400, maxKg: 19_000, minShare: 0.25, driven: true },
     },
   }),
+  'id-water-cdd-5k': () => ({
+    presetId: 'id-water-cdd-5k',
+    name: 'Water tanker 5,000 L (CDD 4×2)',
+    region: 'ID',
+    ...tankerBase(3.6, 1.8, 1.3),
+    grossLimitKg: 8250,
+    payloadKg: 5000,
+    deckHeight: 1.05,
+    bayLength: 1.2,
+    fuel: { emptyLPer100km: 13, fullLPer100km: 17, idleLPerHour: 1.2, reeferLPerHour: 0, tankL: 100 },
+    statics: {
+      type: 'rigid',
+      front: { id: 'front', label: 'Front axle', x: -0.95, count: 1, spread: 0, tareKg: 1800, maxKg: 3000, minShare: 0.2, steer: true },
+      rear: { id: 'rear', label: 'Rear axle', x: 2.4, count: 1, spread: 0, tareKg: 1400, maxKg: 5600, minShare: 0.25, driven: true },
+    },
+    // Clean-water tank: food-grade, with surge baffles.
+    bulk: { kind: 'tank', compartments: compartments(3.6, [5000]), baffled: true, foodGrade: true, insulated: false, pressurised: false },
+  }),
+  'id-water-tronton-16k': () => ({
+    presetId: 'id-water-tronton-16k',
+    name: 'Water tanker 16,000 L (tronton 6×4)',
+    region: 'ID',
+    ...tankerBase(7.2, 2.4, 1.6),
+    grossLimitKg: 26_000,
+    payloadKg: 16_000,
+    deckHeight: 1.3,
+    bayLength: 1.8,
+    fuel: { emptyLPer100km: 26, fullLPer100km: 35, idleLPerHour: 2.2, reeferLPerHour: 0, tankL: 200 },
+    statics: {
+      type: 'rigid',
+      front: { id: 'front', label: 'Front axle', x: -1.4, count: 1, spread: 0, tareKg: 4500, maxKg: 7500, minShare: 0.2, steer: true },
+      rear: { id: 'rear', label: 'Rear tandem', x: 4.6, count: 2, spread: 1.3, tareKg: 5500, maxKg: 19_000, minShare: 0.25, driven: true },
+    },
+    bulk: { kind: 'tank', compartments: compartments(7.2, [8000, 8000]), baffled: true, foodGrade: true, insulated: false, pressurised: false },
+  }),
+  'id-fuel-tronton-16k': () => ({
+    presetId: 'id-fuel-tronton-16k',
+    name: 'Fuel tanker 16,000 L (tronton 6×4)',
+    region: 'ID',
+    ...tankerBase(7.0, 2.4, 1.6),
+    grossLimitKg: 26_000,
+    payloadKg: 16_000,
+    deckHeight: 1.3,
+    bayLength: 1.75,
+    fuel: { emptyLPer100km: 26, fullLPer100km: 35, idleLPerHour: 2.2, reeferLPerHour: 0, tankL: 200 },
+    statics: {
+      type: 'rigid',
+      front: { id: 'front', label: 'Front axle', x: -1.4, count: 1, spread: 0, tareKg: 4500, maxKg: 7500, minShare: 0.2, steer: true },
+      rear: { id: 'rear', label: 'Rear tandem', x: 4.5, count: 2, spread: 1.3, tareKg: 5300, maxKg: 19_000, minShare: 0.25, driven: true },
+    },
+    // Two 8,000 L compartments: the common 16 KL layout for station deliveries.
+    bulk: { kind: 'tank', compartments: compartments(7.0, [8000, 8000]), baffled: false, foodGrade: false, insulated: false, pressurised: false },
+  }),
 };
 
+const CONTAINER_WORDS = ['container', 'kontainer', 'peti kemas'];
+const FUEL_WORDS = ['tangki bbm', 'truk tangki', 'solar', 'bensin', 'minyak', 'pertamina', 'fuel', 'oil'];
+const WATER_WORDS = ['tangki air', 'truk tangki', 'truk air', 'air bersih', 'water'];
+const DUMP_WORDS = ['dump', 'dump truck', 'jungkit', 'tipper', 'pasir', 'batu', 'tanah', 'sand', 'gravel'];
+const REEFER_WORDS = ['reefer', 'refrigerated', 'pendingin', 'frozen', 'beku', 'cold chain'];
+
 export const VEHICLE_PRESETS: VehiclePresetInfo[] = [
-  { id: 'eu-van-35', name: 'EU van 3.5 t', region: 'EU', summary: '4.3 m · 1.2 t · side door' },
-  { id: 'eu-rigid-18', name: 'EU box truck 18 t', region: 'EU', summary: '7.3 m · 9.5 t · 18 EUR pallets' },
-  { id: 'eu-curtainsider-136', name: 'EU 13.6 m curtainsider', region: 'EU', summary: '13.6 m · 25.7 t · 33 EUR pallets' },
-  { id: 'us-dry-van-53', name: 'US 53 ft dry van', region: 'US', summary: '16.0 m · 20.4 t · sliding tandem' },
-  { id: 'us-reefer-53', name: 'US 53 ft reefer (multi-temp)', region: 'US', summary: '15.7 m · 20.0 t · 3 temp zones' },
-  { id: 'container-40hc', name: 'US 40 ft high-cube container', region: 'US', summary: '12.03 m · 26.6 t box · road-limited' },
-  { id: 'us-flatbed-48', name: 'US 48 ft flatbed', region: 'US', summary: '14.6 m · 21.5 t · open deck' },
-  { id: 'id-pickup', name: 'Pick-up 1 t (Gran Max / Carry)', region: 'ID', summary: '2.45 m bed · 1 t · open dropside' },
-  { id: 'id-cde-box', name: 'CDE box truck (Engkel, 4 wheels)', region: 'ID', summary: '3.1 m box · 2.5 t' },
-  { id: 'id-cdd-box', name: 'CDD box truck (Double, 6 wheels)', region: 'ID', summary: '4.3 m box · 4.5 t' },
-  { id: 'id-cdd-reefer', name: 'CDD reefer box (frozen, 6 wheels)', region: 'ID', summary: '4.0 m · 3.8 t · frozen' },
-  { id: 'id-fuso-box', name: 'Fuso box truck (medium 4×2)', region: 'ID', summary: '6.5 m box · 9 t' },
-  { id: 'id-tronton-wingbox', name: 'Tronton wingbox (6×2, 10 wheels)', region: 'ID', summary: '9.4 m · 15.5 t · side loading' },
-  { id: 'id-trailer-wingbox', name: 'Trailer wingbox 12.5 m (tractor 6×4)', region: 'ID', summary: '12.5 m · 26 t · side loading' },
-  { id: 'id-dump-cdd', name: 'Dump truck CDD (4×2, 6 wheels)', region: 'ID', summary: '4.6 m³ body · 4.5 t' },
-  { id: 'id-dump-tronton', name: 'Dump truck tronton (6×4, 10 wheels)', region: 'ID', summary: '16 m³ body · 15 t' },
-  { id: 'container-20', name: '20 ft container (dry)', region: 'INTL', summary: '5.90 m · 28.2 t box · road-limited' },
-  { id: 'container-40', name: '40 ft container (dry)', region: 'INTL', summary: '12.03 m · 26.7 t box · road-limited' },
-  { id: 'container-40hc-reefer', name: '40 ft high-cube reefer container', region: 'INTL', summary: '11.58 m · frozen · genset' },
-  { id: 'tanker-rigid-16k', name: 'Fuel tanker 16,000 L (rigid 6×4)', region: 'EU', summary: '4 × 4,000 L · 16 t payload' },
-  { id: 'tanker-semi-32k', name: 'Fuel tanker 32,000 L (semi-trailer)', region: 'EU', summary: '5 compartments · 25.1 t payload' },
-  { id: 'tanker-water-8k', name: 'Water tanker 8,000 L (rigid 4×2)', region: 'EU', summary: '1 baffled compartment · food-grade' },
-  { id: 'tanker-food-24k', name: 'Food-grade tanker 24,000 L (semi, insulated)', region: 'EU', summary: '3 × 8,000 L · milk, edible oil' },
-  { id: 'tanker-lpg-44k', name: 'LPG tanker 44,000 L (semi, pressurised)', region: 'EU', summary: '1 pressure vessel · 85 % max fill · 20.2 t LPG' },
+  { id: 'id-pickup', name: 'Pick-up 1 t (Gran Max / Carry)', region: 'ID', category: 'van', summary: '2.45 m bed · 1 t · open dropside', keywords: ['pick up', 'pickup', 'pikap', 'bak terbuka', 'gran max', 'carry', 'l300'] },
+  { id: 'id-cde-box', name: 'CDE box truck (Engkel, 4 wheels)', region: 'ID', category: 'truck', summary: '3.1 m box · 2.5 t', keywords: ['cde', 'engkel', 'colt diesel', 'truk box', 'canter', 'dutro'] },
+  { id: 'id-cdd-box', name: 'CDD box truck (Double, 6 wheels)', region: 'ID', category: 'truck', summary: '4.3 m box · 4.5 t', keywords: ['cdd', 'double', 'colt diesel', 'truk box', 'canter', 'dutro'] },
+  { id: 'id-cdd-reefer', name: 'CDD reefer box (frozen, 6 wheels)', region: 'ID', category: 'reefer', summary: '4.0 m · 3.8 t · frozen', keywords: ['cdd', 'box pendingin', ...REEFER_WORDS] },
+  { id: 'id-fuso-box', name: 'Fuso box truck (medium 4×2)', region: 'ID', category: 'truck', summary: '6.5 m box · 9 t', keywords: ['fuso', 'fighter', 'ranger', 'truk box', 'medium'] },
+  { id: 'id-tronton-wingbox', name: 'Tronton wingbox (6×2, 10 wheels)', region: 'ID', category: 'truck', summary: '9.4 m · 15.5 t · side loading', keywords: ['tronton', 'wingbox', 'wing box', 'sayap', '10 roda'] },
+  { id: 'id-trailer-wingbox', name: 'Trailer wingbox 12.5 m (tractor 6×4)', region: 'ID', category: 'semi', summary: '12.5 m · 26 t · side loading', keywords: ['trailer', 'wingbox', 'wing box', 'tractor head', 'tronton'] },
+  { id: 'id-dump-cdd', name: 'Dump truck CDD (4×2, 6 wheels)', region: 'ID', category: 'tipper', summary: '4.6 m³ body · 4.5 t', keywords: ['cdd', ...DUMP_WORDS] },
+  { id: 'id-dump-tronton', name: 'Dump truck tronton (6×4, 10 wheels)', region: 'ID', category: 'tipper', summary: '16 m³ body · 15 t', keywords: ['tronton', ...DUMP_WORDS] },
+  { id: 'id-water-cdd-5k', name: 'Water tanker 5,000 L (CDD 4×2)', region: 'ID', category: 'tanker', summary: '1 baffled tank · food-grade · 5 t', keywords: ['cdd', '5000 liter', ...WATER_WORDS] },
+  { id: 'id-water-tronton-16k', name: 'Water tanker 16,000 L (tronton 6×4)', region: 'ID', category: 'tanker', summary: '2 × 8,000 L · food-grade · 16 t', keywords: ['tronton', '16000 liter', ...WATER_WORDS] },
+  { id: 'id-fuel-tronton-16k', name: 'Fuel tanker 16,000 L (tronton 6×4)', region: 'ID', category: 'tanker', summary: '2 × 8,000 L · 16 t payload', keywords: ['tronton', '16 kl', ...FUEL_WORDS] },
+  { id: 'container-20', name: '20 ft container (dry)', region: 'INTL', category: 'container', summary: '5.90 m · 28.2 t box · road-limited', keywords: ['20 ft', '20 feet', '20ft', ...CONTAINER_WORDS] },
+  { id: 'container-40', name: '40 ft container (dry)', region: 'INTL', category: 'container', summary: '12.03 m · 26.7 t box · road-limited', keywords: ['40 ft', '40 feet', '40ft', ...CONTAINER_WORDS] },
+  { id: 'container-40hc-reefer', name: '40 ft high-cube reefer container', region: 'INTL', category: 'container', summary: '11.58 m · frozen · genset', keywords: ['40 ft', '40 feet', 'high cube', ...CONTAINER_WORDS, ...REEFER_WORDS] },
+  { id: 'eu-van-35', name: 'EU van 3.5 t', region: 'EU', category: 'van', summary: '4.3 m · 1.2 t · side door', keywords: ['van', 'blind van', 'mobil box', 'sprinter'] },
+  { id: 'eu-rigid-18', name: 'EU box truck 18 t', region: 'EU', category: 'truck', summary: '7.3 m · 9.5 t · 18 EUR pallets', keywords: ['truk box', 'rigid', 'lorry'] },
+  { id: 'eu-curtainsider-136', name: 'EU 13.6 m curtainsider', region: 'EU', category: 'semi', summary: '13.6 m · 25.7 t · 33 EUR pallets', keywords: ['curtainsider', 'tautliner', 'trailer'] },
+  { id: 'us-dry-van-53', name: 'US 53 ft dry van', region: 'US', category: 'semi', summary: '16.0 m · 20.4 t · sliding tandem', keywords: ['dry van', 'trailer', '53 ft'] },
+  { id: 'us-reefer-53', name: 'US 53 ft reefer (multi-temp)', region: 'US', category: 'reefer', summary: '15.7 m · 20.0 t · 3 temp zones', keywords: ['trailer', '53 ft', ...REEFER_WORDS] },
+  { id: 'container-40hc', name: 'US 40 ft high-cube container', region: 'US', category: 'container', summary: '12.03 m · 26.6 t box · road-limited', keywords: ['40 ft', '40 feet', '40ft', 'high cube', ...CONTAINER_WORDS] },
+  { id: 'us-flatbed-48', name: 'US 48 ft flatbed', region: 'US', category: 'flatbed', summary: '14.6 m · 21.5 t · open deck', keywords: ['flatbed', 'trailer datar', 'open deck', 'bak datar'] },
+  { id: 'tanker-rigid-16k', name: 'Fuel tanker 16,000 L (rigid 6×4)', region: 'EU', category: 'tanker', summary: '4 × 4,000 L · 16 t payload', keywords: FUEL_WORDS },
+  { id: 'tanker-semi-32k', name: 'Fuel tanker 32,000 L (semi-trailer)', region: 'EU', category: 'tanker', summary: '5 compartments · 25.1 t payload', keywords: ['trailer', '32 kl', ...FUEL_WORDS] },
+  { id: 'tanker-water-8k', name: 'Water tanker 8,000 L (rigid 4×2)', region: 'EU', category: 'tanker', summary: '1 baffled compartment · food-grade', keywords: WATER_WORDS },
+  { id: 'tanker-food-24k', name: 'Food-grade tanker 24,000 L (semi, insulated)', region: 'EU', category: 'tanker', summary: '3 × 8,000 L · milk, edible oil', keywords: ['susu', 'milk', 'cpo', 'minyak goreng', 'food grade', 'insulated'] },
+  { id: 'tanker-lpg-44k', name: 'LPG tanker 44,000 L (semi, pressurised)', region: 'EU', category: 'tanker', summary: '1 pressure vessel · 85 % max fill · 20.2 t LPG', keywords: ['lpg', 'elpiji', 'gas', 'pressure', 'tekanan'] },
 ];
 
 /** Fresh, independent vehicle built from a preset. */

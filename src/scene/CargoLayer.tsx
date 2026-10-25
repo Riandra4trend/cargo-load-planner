@@ -22,6 +22,7 @@ import { boxToThree, setThree, toThree } from './coords';
 import { GOODS_FILM, GOODS_SOLID, GOODS_TAG, goodsModelFor, useRetainGoods } from './goods/cache';
 import type { GoodsModel } from './goods/model';
 import { goodsInstanceMatrix } from './goods/orientation';
+import { dropInProgress, dropInsActive, DROP_HEIGHT, DROP_MS } from './dropIn';
 import { SceneLabel } from './labels';
 import { UNIT_BOX, UNIT_CYLINDER, UNIT_PALLET, UNIT_PLANE } from './materials';
 import { unitColor, type ColorContext } from './palette';
@@ -139,14 +140,20 @@ interface GoodsMeshes {
   film?: InstancedMesh;
 }
 
-/** Interpolated box (writes into `out`). */
-function lerpBox(a: Box, b: Box, t: number, out: Box): Box {
-  out.min.x = a.min.x + (b.min.x - a.min.x) * t;
-  out.min.y = a.min.y + (b.min.y - a.min.y) * t;
-  out.min.z = a.min.z + (b.min.z - a.min.z) * t;
-  out.max.x = a.max.x + (b.max.x - a.max.x) * t;
-  out.max.y = a.max.y + (b.max.y - a.max.y) * t;
-  out.max.z = a.max.z + (b.max.z - a.max.z) * t;
+/** Interpolated box, optionally raised by `lift` metres (writes into `out`, which may alias `a` or `b`). */
+function lerpBox(a: Box, b: Box, t: number, out: Box, lift = 0): Box {
+  const minX = a.min.x + (b.min.x - a.min.x) * t;
+  const minY = a.min.y + (b.min.y - a.min.y) * t;
+  const minZ = a.min.z + (b.min.z - a.min.z) * t + lift;
+  const maxX = a.max.x + (b.max.x - a.max.x) * t;
+  const maxY = a.max.y + (b.max.y - a.max.y) * t;
+  const maxZ = a.max.z + (b.max.z - a.max.z) * t + lift;
+  out.min.x = minX;
+  out.min.y = minY;
+  out.min.z = minZ;
+  out.max.x = maxX;
+  out.max.y = maxY;
+  out.max.z = maxZ;
   return out;
 }
 
@@ -206,10 +213,16 @@ export const CargoLayer = memo(function CargoLayer(props: CargoLayerProps) {
   const write = useCallback(
     (t: number) => {
       const from = tweenRef.current?.from;
+      const now = performance.now();
+      const dropping = dropInsActive(now);
       const boxAt = (i: number): Box => {
         const it = items[i];
         const start = t < 1 ? from?.get(it.unit.id) : undefined;
-        return start ? lerpBox(start, it.box, t, scratch.current) : it.box;
+        const base = start ? lerpBox(start, it.box, t, scratch.current) : it.box;
+        const lift = dropping ? DROP_HEIGHT * (1 - dropInProgress(it.unit.id, now, DROP_MS)) : 0;
+        if (lift <= 0) return base;
+        // Newly added goods ease down into place.
+        return lerpBox(base, base, 0, scratch.current, lift);
       };
       const meshes = { box: boxRef.current, cylinder: cylRef.current, pallet: palletRef.current };
       const counters = { box: 0, cylinder: 0, pallet: 0 };
@@ -298,9 +311,16 @@ export const CargoLayer = memo(function CargoLayer(props: CargoLayerProps) {
     write(tw ? easeInOut(Math.min(1, (performance.now() - tw.start) / TWEEN_MS)) : 1);
   }, [write]);
 
+  const droppingRef = useRef(false);
   useFrame(() => {
     const tw = tweenRef.current;
-    if (!tw) return;
+    const dropping = dropInsActive(performance.now());
+    if (!tw) {
+      // Drop-ins: animate while active, then one final write at rest.
+      if (dropping || droppingRef.current) write(1);
+      droppingRef.current = dropping;
+      return;
+    }
     const p = Math.min(1, (performance.now() - tw.start) / TWEEN_MS);
     write(easeInOut(p));
     if (p >= 1) tweenRef.current = null;

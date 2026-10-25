@@ -133,6 +133,11 @@ describe('proposeVehicles for bulk liquid', () => {
     expect(proposeVehicles(planWith([], [fill('l', 'lpg', 30_000)]))).toEqual(['tanker-lpg-44k']);
   });
 
+  it('sizes the tanker with the material’s own max fill: 7,800 L of water fits the 8,000 L water tanker at 98 %', () => {
+    // 7,800 L is above 97 % of 8,000 L (7,760 L) but within water's 98 % (7,840 L).
+    expect(proposeVehicles(planWith([], [fill('w', 'water', 7800)]))).toEqual(['tanker-water-8k']);
+  });
+
   it('packaged units never get tankers', () => {
     const pallet = { id: 'p', spec: makeSpec({ name: 'Pallet', dims: { l: 1.2, w: 0.8, h: 1 }, weightKg: 200 }), quantity: 2, stopId: 's1', priority: 'normal' as const };
     const fleet = proposeVehicles(planWith([], [pallet, fill('d', 'diesel', 3500)]));

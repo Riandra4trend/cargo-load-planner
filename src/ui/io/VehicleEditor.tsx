@@ -3,7 +3,7 @@ import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import { TEMP_LABELS } from '../../domain/colors';
 import { uid } from '../../domain/ids';
 import { materialDef } from '../../domain/materials';
-import { createCustomVehicle, createVehicle, sliderPositions, VEHICLE_PRESETS, vehicleTareKg } from '../../domain/presets';
+import { createCustomVehicle, createVehicle, PRESET_CATEGORIES, sliderPositions, VEHICLE_PRESETS, vehicleTareKg } from '../../domain/presets';
 import type { AccessSide, ArticStatics, AxleGroup, BodyStyle, BulkSpec, Compartment, FuelProfile, Id, Region, TempClass, UnitSystem, Vehicle, VehicleKind } from '../../domain/types';
 import { bigLengthUnit, formatLength, formatLitres, formatMass, formatMaterialVolume, formatPercent, kgToLb, L_PER_US_GAL, lbToKg, lPer100kmToMpg, M_PER_FT, weightUnit } from '../../domain/units';
 import { curvePeak, loadDistributionCurve, maxLegalFill } from '../../physics';
@@ -39,13 +39,8 @@ const REGIONS: { value: Region; label: string }[] = [
   { value: 'INTL', label: 'International (ISO)' },
   { value: 'custom', label: 'Other' },
 ];
-/** Preset groups in the "Start from" select. */
-const PRESET_GROUPS: { region: Region; label: string }[] = [
-  { region: 'ID', label: 'Indonesia' },
-  { region: 'EU', label: 'Europe' },
-  { region: 'US', label: 'United States' },
-  { region: 'INTL', label: 'International (ISO containers)' },
-];
+/** Region names shown in the "Start from" options (same wording as the vehicle picker). */
+const REGION_LABELS: Record<Region, string> = { ID: 'Indonesia', EU: 'Europe', US: 'North America', INTL: 'International', custom: 'Other' };
 const KINDS: { value: VehicleKind; label: string }[] = [
   { value: 'van', label: 'Van' },
   { value: 'rigid', label: 'Rigid truck' },
@@ -331,11 +326,11 @@ export function VehicleEditor({ request }: { request: { mode: 'create' | 'edit';
               {request.mode === 'create' && (
                 <Field label="Start from" className="col-span-2 sm:col-span-3">
                   <select value={presetId} onChange={(e) => choosePreset(e.target.value)} className={`${inputClass} pr-7`} aria-label="Start from preset">
-                    {PRESET_GROUPS.map((g) => (
-                      <optgroup key={g.region} label={g.label}>
-                        {VEHICLE_PRESETS.filter((p) => p.region === g.region).map((p) => (
-                          <option key={p.id} value={p.id}>
-                            {p.name} — {p.summary}
+                    {PRESET_CATEGORIES.map((c) => (
+                      <optgroup key={c.id} label={c.label}>
+                        {VEHICLE_PRESETS.filter((p) => p.category === c.id).map((p) => (
+                          <option key={p.id} value={p.id} title={p.summary}>
+                            {p.name} · {REGION_LABELS[p.region]}
                           </option>
                         ))}
                       </optgroup>

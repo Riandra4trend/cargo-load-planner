@@ -1,4 +1,4 @@
-import type { Hazmat, MaterialContents, MaterialState, TempClass } from './types';
+import type { Hazmat, ItemSpec, MaterialContents, MaterialState, TempClass } from './types';
 
 export type MaterialCategory = 'water' | 'fuel' | 'oil' | 'food' | 'chemical' | 'gas' | 'aggregate' | 'mineral' | 'agri' | 'biomass';
 
@@ -137,6 +137,18 @@ export const MATERIAL_LIBRARY: MaterialDef[] = [
   solid('urea', 'Urea fertilizer (granular)', 0.75, 'agri', '#FAFAFA'),
   solid('wood-chips', 'Wood chips', 0.3, 'biomass', '#B08D57', { note: 'Fresh chips 0.25-0.40 t/m³' }),
 ];
+
+/**
+ * The spec with a different volume of its material: weight = the container tare (what the old weight
+ * held beyond the old volume × density; 0 for bulk fills) + new volume × density. Specs without a
+ * material are returned unchanged.
+ */
+export function withMaterialVolume(spec: ItemSpec, volumeL: number): ItemSpec {
+  const m = spec.material;
+  if (!m) return spec;
+  const tareKg = Math.max(0, spec.weightKg - m.volumeL * m.densityKgPerL);
+  return { ...spec, weightKg: tareKg + volumeL * m.densityKgPerL, material: { ...m, volumeL } };
+}
 
 export const CUSTOM_MATERIAL_ID = 'custom';
 

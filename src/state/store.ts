@@ -111,6 +111,8 @@ export interface UiState {
   toasts: Toast[];
   /** Line ids to highlight in the table (e.g. freshly added urgent rows). */
   highlightLines: Id[];
+  /** Cargo palette (ready-made goods to add to the active vehicle) is open. */
+  paletteOpen: boolean;
 }
 
 export interface LinePatch extends Partial<Omit<CargoLine, 'id' | 'spec'>> {
@@ -141,6 +143,11 @@ export interface StoreState {
   addLine: (line: Omit<CargoLine, 'id'>) => Id;
   /** Adds several lines as one undo step; returns their ids. */
   addLines: (lines: Omit<CargoLine, 'id'>[]) => Id[];
+  /**
+   * Adds a cargo line and places its units in one undo step. `place` receives the plan that already
+   * contains the new (unplaced) line plus the line id, and returns the placements to apply.
+   */
+  addLineAndPlace: (line: Omit<CargoLine, 'id'>, place: (plan: Plan, lineId: Id) => Placement[], label?: string) => Id;
   updateLine: (id: Id, patch: LinePatch) => void;
   removeLines: (ids: Id[]) => void;
   duplicateLine: (id: Id) => Id | null;
@@ -197,6 +204,7 @@ export interface StoreState {
   setNav: (nav: NavPanel) => void;
   setTableTab: (tab: TableTab) => void;
   setSearch: (search: string) => void;
+  setPaletteOpen: (open: boolean) => void;
   openDialog: <K extends keyof DialogState>(key: K, value: NonNullable<DialogState[K]>) => void;
   closeDialog: (key: keyof DialogState) => void;
   setDrag: (drag: DragState | null) => void;
@@ -247,6 +255,7 @@ function initialUi(plan: Plan): UiState {
     focus: { unitId: null, nonce: 0 },
     toasts: [],
     highlightLines: [],
+    paletteOpen: false,
   };
 }
 
@@ -293,7 +302,7 @@ export const useStore = create<StoreState>()((set, get) => {
         plan,
         past: opts?.keepHistory ? [...past, current].slice(-HISTORY_LIMIT) : [],
         future: [],
-        ui: { ...initialUi(plan), view: ui.view, colorMode: ui.colorMode, toasts: ui.toasts },
+        ui: { ...initialUi(plan), view: ui.view, colorMode: ui.colorMode, toasts: ui.toasts, paletteOpen: ui.paletteOpen },
       });
     },
 
@@ -308,6 +317,16 @@ export const useStore = create<StoreState>()((set, get) => {
         lines.forEach((l, i) => d.lines.push({ ...structuredClone(l), id: ids[i] }));
       });
       return ids;
+    },
+    addLineAndPlace: (line, place, label = 'Add cargo') => {
+      const id = uid('line');
+      const current = get().plan;
+      const placements = place({ ...current, lines: [...current.lines, { ...structuredClone(line), id }] }, id);
+      commit(label, (d) => {
+        d.lines.push({ ...structuredClone(line), id });
+        for (const p of placements) d.placements[p.unitId] = structuredClone(p);
+      });
+      return id;
     },
     updateLine: (id, patch) =>
       commit('Edit item', (d) => {
@@ -560,6 +579,7 @@ export const useStore = create<StoreState>()((set, get) => {
     setNav: (nav) => setUi({ nav }),
     setTableTab: (tableTab) => setUi({ tableTab }),
     setSearch: (search) => setUi({ search }),
+    setPaletteOpen: (paletteOpen) => setUi({ paletteOpen }),
     openDialog: (key, value) => setUi((u) => ({ dialogs: { ...u.dialogs, [key]: value } })),
     closeDialog: (key) =>
       setUi((u) => {

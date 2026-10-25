@@ -94,10 +94,13 @@ function proposeTankers(plan: Plan, candidates: readonly Vehicle[], fills: reado
   const presets = candidates
     .filter((v) => v.bulk?.kind === 'tank' && eligible(v))
     .filter((v) => fills.every((u) => v.bulk!.compartments.some((c) => litresOf(u.spec) <= maxFillL(u.spec, c.capacityL) + 1e-6)))
-    .sort((a, b) => totalCapacity(a) - totalCapacity(b));
+    // Smallest first; on equal capacity, more (smaller) compartments: partial fills stay fuller and surge less.
+    .sort((a, b) => totalCapacity(a) - totalCapacity(b) || b.bulk!.compartments.length - a.bulk!.compartments.length);
   if (!presets.length) return { ids: [], legal: false };
   const litres = fills.reduce((sum, u) => sum + litresOf(u.spec), 0);
-  const lowerBound = (v: Vehicle) => Math.max(1, Math.ceil(fills.length / v.bulk!.compartments.length - 1e-9), Math.ceil(litres / (totalCapacity(v) * 0.97) - 1e-9));
+  // Optimistic count: the most permissive max fill among these materials (98 % for water, 97 % for fuels).
+  const lowerBound = (v: Vehicle) =>
+    Math.max(1, Math.ceil(fills.length / v.bulk!.compartments.length - 1e-9), Math.ceil(litres / Math.max(...fills.map((u) => maxFillL(u.spec, totalCapacity(v)))) - 1e-9));
   let placedOnly: string[] | null = null;
   let runs = 0;
   for (let k = Math.min(...presets.map(lowerBound)); k <= MAX_VEHICLES && runs < MAX_VERIFICATIONS; k++) {

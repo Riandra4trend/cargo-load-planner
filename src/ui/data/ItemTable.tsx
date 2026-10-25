@@ -32,6 +32,7 @@ import { useStore, type TableTab } from '../../state/store';
 import { Button, IconButton } from '../common/Button';
 import { Card, CardHeader } from '../common/Card';
 import { ColorDot, UnitStatusChip } from '../common/Chip';
+import { CARGO_UNIT_MIME } from '../common/dragTypes';
 import { inputClass } from '../common/fields';
 import { splitAdvice, vehicleSuits, type SplitAdvice } from './itemChecks';
 import { placeOnVehicle, targetVehicleId } from './placement';
@@ -542,7 +543,7 @@ export function ItemTable() {
                     aria-selected={isSel}
                     draggable={!placement && !locked}
                     onDragStart={(e) => {
-                      e.dataTransfer.setData('application/x-cargo-unit', unit.id);
+                      e.dataTransfer.setData(CARGO_UNIT_MIME, unit.id);
                       e.dataTransfer.setData('text/plain', s.name);
                       e.dataTransfer.effectAllowed = 'move';
                     }}

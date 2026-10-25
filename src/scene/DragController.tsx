@@ -1,21 +1,17 @@
 import { useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { MeshBasicMaterial, Plane, Raycaster, Vector2, Vector3, type Camera } from 'three';
-import { allowedOrientations, boxCenter, expandUnits, isBulk, orientedSize, placementBox } from '../domain/geometry';
+import { allowedOrientations, boxCenter, expandUnits, orientedSize, placementBox } from '../domain/geometry';
 import type { Id, ItemSpec, Orientation, Placement, Vehicle } from '../domain/types';
 import { validateMove } from '../rules';
 import { useStore } from '../state/store';
 import { boxToThree, threeToCargo, toThree } from './coords';
 import { dragCandidate, dragContext, type DragContext } from './dragMath';
-import { compartmentAtX } from './tankMath';
 import { interaction, syncControls } from './interaction';
 import { SceneLabel } from './labels';
 import { UNIT_BOX } from './materials';
 import { boxEdgePoints, CLines } from './prims';
 import { UnitMesh } from './UnitMesh';
-
-/** MIME type of HTML5 drags of unplaced units from the item table (data = unit id). */
-export const CARGO_UNIT_MIME = 'application/x-cargo-unit';
 
 const DRAG_THRESHOLD_PX = 5;
 
@@ -62,8 +58,8 @@ export function pointerToCargoPlane(raycaster: Raycaster, camera: Camera, ndc: V
 }
 
 /**
- * Drag & drop of placed units on the cargo floor (snap, stack, validate, R rotates, Esc cancels) and
- * HTML5 drops of unplaced units from the table. Returns the pointer-down handler for cargo units.
+ * Drag & drop of placed units on the cargo floor (snap, stack, validate, R rotates, Esc cancels).
+ * Returns the pointer-down handler for cargo units (HTML5 drops live in DropController).
  */
 export function useDragController(vehicle: Vehicle, draggable: boolean): (unitId: Id, e: ThreeEvent<PointerEvent>) => void {
   const get = useThree((s) => s.get);
@@ -206,75 +202,6 @@ export function useDragController(vehicle: Vehicle, draggable: boolean): (unitId
     if (session.current?.dirty) update();
   });
 
-  // HTML5 drops of unplaced units from the item table.
-  useEffect(() => {
-    const target = connected ?? gl.domElement;
-    const accepts = (ev: DragEvent) => !!ev.dataTransfer && Array.from(ev.dataTransfer.types).includes(CARGO_UNIT_MIME);
-    const onDragOver = (ev: DragEvent) => {
-      if (!accepts(ev)) return;
-      ev.preventDefault();
-      if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'move';
-    };
-    const onDrop = (ev: DragEvent) => {
-      if (!accepts(ev) || !ev.dataTransfer) return;
-      ev.preventDefault();
-      const store = useStore.getState();
-      const { plan, ui } = store;
-      const unitId = ev.dataTransfer.getData(CARGO_UNIT_MIME);
-      const unit = expandUnits(plan).find((u) => u.id === unitId);
-      if (!unit) return;
-      if (ui.optimise.diff || ui.animation.mode !== 'idle') {
-        store.toast('Finish the optimiser preview or the animation before placing units', 'error');
-        return;
-      }
-      const v = vehicleRef.current;
-      const bulk = isBulk(unit.spec);
-      if (bulk !== !!v.bulk) {
-        store.toast(
-          bulk
-            ? `Can't place ${unit.spec.name} here: bulk ${unit.spec.material?.state === 'solid' ? 'material needs a dump truck body' : 'liquid needs a tanker compartment'}`
-            : `Can't place ${unit.spec.name} here: a ${v.bulk?.kind === 'tipper' ? 'dump truck' : 'tanker'} carries only bulk material`,
-          'error',
-        );
-        return;
-      }
-      const p = pointerToCargo(toNdc(ev.clientX, ev.clientY, new Vector2()), v.cargo.w / 2, bulk ? v.cargo.h / 2 : 0);
-      if (!p || p.x < -1 || p.x > v.cargo.l + 1 || p.y < -1 || p.y > v.cargo.w + 1) {
-        store.toast(bulk ? `Drop ${unit.spec.name} onto ${v.bulk?.kind === 'tipper' ? 'the dump body' : 'a tank compartment'}` : `Drop ${unit.spec.name} onto the cargo floor`, 'error');
-        return;
-      }
-      if (bulk) {
-        const c = compartmentAtX(v, p.x);
-        if (!c) return;
-        const check = validateMove(plan, { unitId, vehicleId: v.id, compartmentId: c.id, pos: { x: c.fromX, y: 0, z: 0 }, orient: 0 });
-        if (!check.ok) {
-          store.toast(`Can't fill ${c.label} with ${unit.spec.name}: ${check.reasons[0] ?? 'blocked'}`, 'error');
-          return;
-        }
-        store.assignCompartment(unitId, v.id, c.id);
-        store.select([unitId], 'replace');
-        return;
-      }
-      const ctx = dragContext(plan, v.id, unitId);
-      if (!ctx) return;
-      const orient = allowedOrientations(unit.spec)[0];
-      const candidate: Placement = { unitId, vehicleId: v.id, pos: dragCandidate(ctx, p, orientedSize(unit.spec.dims, orient)), orient };
-      const check = validateMove(plan, candidate);
-      if (!check.ok) {
-        store.toast(`Can't place ${unit.spec.name} here: ${check.reasons[0] ?? 'blocked'}`, 'error');
-        return;
-      }
-      store.placeUnits([candidate], 'Place unit');
-      store.select([unitId], 'replace');
-    };
-    target.addEventListener('dragover', onDragOver);
-    target.addEventListener('drop', onDrop);
-    return () => {
-      target.removeEventListener('dragover', onDragOver);
-      target.removeEventListener('drop', onDrop);
-    };
-  }, [connected, gl, pointerToCargo, toNdc]);
-
   return useCallback((unitId: Id, e: ThreeEvent<PointerEvent>) => {
     const ev = e.nativeEvent;
     session.current = {
@@ -301,7 +228,7 @@ export function useDragController(vehicle: Vehicle, draggable: boolean): (unitId
   }, [connected]);
 }
 
-const ghostMaterials = {
+export const ghostMaterials = {
   valid: new MeshBasicMaterial({ color: '#15803d', transparent: true, opacity: 0.22, depthWrite: false }),
   invalid: new MeshBasicMaterial({ color: '#c2261d', transparent: true, opacity: 0.28, depthWrite: false }),
 };

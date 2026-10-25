@@ -10,6 +10,8 @@ Plan truck, trailer and container loads in 3D, in the browser. Define your cargo
 
 ## What it does
 
+**Getting started:** pick a vehicle (Add vehicle: grouped by type, searchable in English or Indonesian, e.g. "tangki air", "kontainer", "dump"), then press **+ Add cargo** next to the truck. The cargo palette lists ready-made goods (pallets, cartons, drums, IBCs, water, fuel, sand...): click Add and the goods go straight into the truck, or drag a card onto the 3D truck to put it where you want. Then press **Optimise** to re-pack everything legally.
+
 **Cargo objects**
 - Item editor with live 3D preview: L × W × H in mm/cm/m/in/ft, weight in kg/t/lb, quantity, packaging presets (EUR / half / industrial / US GMA pallets, carton, crate, 200 L drum, IBC, 20 L jerrycan, long goods), palletized height, centre-of-gravity offset, stackable, max load on top, max layers, fragile, keep upright, allowed rotations, temperature class, food flag, hazmat (UN number, class, packing group), and a material mode (liquids and dry bulk) that calculates the weight from volume × density.
 - Live derived values (volume, density, footprint, loading metres) and a fit check against every vehicle and door.
@@ -17,11 +19,11 @@ Plan truck, trailer and container loads in 3D, in the browser. Define your cargo
 
 **Vehicles**
 - Presets, all approximate and editable:
-  - Indonesia: pick-up 1 t, CDE and CDD box trucks, CDD reefer, Fuso box truck, tronton wingbox, 12.5 m trailer wingbox, and two dump trucks (CDD 4.6 m³, tronton 16 m³).
+  - Indonesia: pick-up 1 t, CDE and CDD box trucks, CDD reefer, Fuso box truck, tronton wingbox, 12.5 m trailer wingbox, two dump trucks (CDD 4.6 m³, tronton 16 m³), water tankers (5,000 L on a CDD, 16,000 L on a tronton) and a 16,000 L tronton fuel tanker.
   - ISO containers on a skeletal chassis: 20 ft and 40 ft dry, 40 ft high-cube reefer.
   - Europe: van 3.5 t, box truck 18 t, 13.6 m curtainsider.
   - North America: 53 ft dry van, 53 ft multi-temp reefer, 40 ft high-cube container, 48 ft flatbed.
-  - Tankers: 16,000 L rigid fuel, 32,000 L semi fuel, 8,000 L water, 24,000 L insulated food-grade, 44,000 L pressurised LPG.
+  - Other tankers: 16,000 L rigid fuel, 32,000 L semi fuel, 8,000 L water, 24,000 L insulated food-grade, 44,000 L pressurised LPG.
 - Custom vehicle editor (rigid or tractor + semi-trailer; box, curtainsider, wingbox or dropside body; tanker compartments or a dump body) with a live side-view schematic and load distribution curve.
 - Several vehicles per plan; "Suggest" proposes the fewest vehicles that carry everything.
 

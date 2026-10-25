@@ -15,16 +15,24 @@ function isTyping(target: EventTarget | null): boolean {
 
 /**
  * Global keyboard shortcuts: Ctrl/Cmd+Z undo, Ctrl/Cmd+Y or Ctrl/Cmd+Shift+Z redo, 1–4 views,
- * Space play/pause, Delete/Backspace unplace, R rotate, F focus, Esc clear selection. Ignored while
- * typing, while a 3D drag is active (the scene owns R/Esc then) and while a dialog is open.
+ * Space play/pause, Delete/Backspace unplace, R rotate, F focus, A toggle the cargo palette, Esc close the
+ * palette or clear the selection. Ignored while typing, while a 3D drag is active (the scene owns R/Esc then)
+ * and while a dialog is open.
  */
 export function useShortcuts(): void {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.defaultPrevented || isTyping(e.target)) return;
+      if (e.defaultPrevented) return;
       const s = useStore.getState();
       const { ui } = s;
       if (ui.drag || Object.keys(ui.dialogs).length > 0 || ui.optimise.running || ui.optimise.diff) return;
+      // Esc closes the cargo palette, also from its own search box.
+      if (e.key === 'Escape' && ui.paletteOpen && (!isTyping(e.target) || (e.target as HTMLElement).closest('[data-cargo-palette]'))) {
+        e.preventDefault();
+        s.setPaletteOpen(false);
+        return;
+      }
+      if (isTyping(e.target)) return;
       const mod = e.ctrlKey || e.metaKey;
       const key = e.key.toLowerCase();
 
@@ -69,6 +77,10 @@ export function useShortcuts(): void {
           if (!ui.selection.length) return;
           e.preventDefault();
           s.requestFocus(ui.selection[0]);
+          return;
+        case 'a':
+          e.preventDefault();
+          s.setPaletteOpen(!ui.paletteOpen);
           return;
         case 'escape':
           if (!ui.selection.length) return;

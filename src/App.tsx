@@ -11,6 +11,7 @@ import { RightPanel } from './ui/shell/RightPanel';
 import { ShellDialogs } from './ui/shell/ShellDialogs';
 import { Sidebar } from './ui/shell/Sidebar';
 import { TopBar } from './ui/shell/TopBar';
+import { ViewportOverlays } from './ui/shell/ViewportOverlays';
 
 export function App() {
   const view = useStore((s) => s.ui.view);
@@ -24,6 +25,7 @@ export function App() {
           <section className="flex shrink-0 flex-col gap-3 xl:h-[64vh] xl:min-h-[500px] xl:flex-row">
             <div className="relative h-[56vh] min-h-[380px] min-w-0 flex-1 overflow-hidden rounded-card border border-line bg-card shadow-card xl:h-auto">
               {view === 'plan' ? <PlanView /> : <Viewport />}
+              <ViewportOverlays />
             </div>
             <div className="flex max-h-[80vh] xl:max-h-none">
               <RightPanel />

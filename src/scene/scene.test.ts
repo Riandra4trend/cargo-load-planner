@@ -12,6 +12,8 @@ import { MAX_PARTS } from './goods/builder';
 import { buildGoodsModel, disposeGoodsModel, liquidFraction } from './goods/model';
 import { goodsInstanceMatrix, orientationRotation } from './goods/orientation';
 import { axleLoadText } from './sceneFormat';
+import type { StoreState } from '../state/store';
+import { dropInProgress, dropInsActive, DROP_MS, trackDropIns } from './dropIn';
 import { dockLayout } from './staging';
 import { chordWidth, compartmentAtX, liquidLevel, tankBarrel } from './tankMath';
 import { unitParts } from './unitParts';
@@ -298,5 +300,29 @@ describe('tipper geometry', () => {
     expect(cabOverClass(createVehicle('id-pickup'))).toBe('pickup');
     expect(cabOverClass(createVehicle('id-dump-tronton'))).toBe('heavy');
     expect(cabOverClass(createVehicle('eu-rigid-18'))).toBeNull();
+  });
+});
+
+describe('drop-in animation tracking', () => {
+  const state = (plan: Plan, extra: { past?: Plan[]; future?: Plan[]; mode?: 'idle' | 'load'; diff?: boolean } = {}) =>
+    ({ plan, past: extra.past ?? [], future: extra.future ?? [], ui: { animation: { mode: extra.mode ?? 'idle' }, optimise: extra.diff ? { diff: {} } : {} } }) as unknown as StoreState;
+  const base = createSeedPlan();
+  const unitId = Object.keys(base.placements)[0];
+  const without: Plan = { ...base, placements: Object.fromEntries(Object.entries(base.placements).filter(([id]) => id !== unitId)) };
+
+  it('animates units placed by a new edit only', () => {
+    trackDropIns(state(without), state(base, { past: [without] }), 1000);
+    expect(dropInProgress(unitId, 1000, DROP_MS)).toBe(0);
+    expect(dropInProgress(unitId, 1000 + DROP_MS, DROP_MS)).toBe(1);
+    expect(dropInsActive(5000)).toBe(false);
+  });
+
+  it('ignores undo / redo jumps, plan switches, simulations and optimiser accepts', () => {
+    trackDropIns(state(without, { future: [base] }), state(base, { past: [without] }), 1000);
+    trackDropIns(state(without, { past: [base] }), state(base, { future: [without] }), 1000);
+    trackDropIns(state({ ...without, id: 'other' }), state(base), 1000);
+    trackDropIns(state(without), state(base, { mode: 'load' }), 1000);
+    trackDropIns(state(without, { diff: true }), state(base), 1000);
+    expect(dropInsActive(1001)).toBe(false);
   });
 });
