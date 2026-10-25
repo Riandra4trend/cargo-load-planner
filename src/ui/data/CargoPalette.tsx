@@ -101,7 +101,7 @@ export function CargoPalette({ onClose }: { onClose: () => void }) {
   const focusCard = (i: number) => cardRefs.current[Math.max(0, Math.min(visible.length - 1, i))]?.focus();
 
   const load = (t: ItemTemplate, vehicleId: Id) => {
-    const { plan: current, setHighlightLines, select, requestFocus, setActiveVehicle, toast } = useStore.getState();
+    const { plan: current, setHighlightLines, select, setActiveVehicle, toast } = useStore.getState();
     const quantity = qtyOf(t.id);
     const spec = specOf(t);
     const result = addCargoToVehicle(spec, quantity, stopId, vehicleId, { contents: t.contents });
@@ -110,10 +110,8 @@ export function CargoPalette({ onClose }: { onClose: () => void }) {
     setActiveVehicle(vehicleId);
     setHighlightLines([result.lineId]);
     setMismatch(null);
-    if (result.placed.length) {
-      select([result.placed[0]]);
-      requestFocus(result.placed[0]);
-    }
+    // Select without moving the camera, so the forklift's trip from the warehouse stays in view.
+    if (result.placed.length) select([result.placed[0]]);
     if (!result.unplaced.length) toast(`Added ${quantity} × ${what} to ${name}`, 'success');
     else if (result.placed.length) toast(`${result.placed.length} placed, ${result.unplaced.length} didn't fit: Optimise or add a vehicle`, 'info');
     else toast(`${what} didn't fit on ${name}: added as unplaced. Optimise or add a vehicle`, 'error');

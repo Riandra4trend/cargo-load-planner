@@ -168,6 +168,21 @@ const SEED_LINES: SeedLine[] = [
     quantity: 1,
     spec: makeSpec({ name: 'Chilled ready meals', sku: 'FRS-1188', category: 'Ready meals', origin: 'France', packaging: 'eur-pallet', palletHeight: 0.144, dims: { ...EUR, h: 1.6 }, weightKg: 640, temp: 'chilled', isFood: true }),
   },
+  // Not in SEED_LAYOUT: these orders wait in the warehouse until Optimise, a drag or Load at dock puts them aboard.
+  {
+    key: 'jackets',
+    stop: 1,
+    quantity: 2,
+    contents: '300 pcs',
+    spec: makeSpec({ name: 'Outdoor jackets', sku: 'APP-2164', category: 'Apparel', origin: 'Vietnam', packaging: 'eur-pallet', palletHeight: 0.144, dims: { ...EUR, h: 1.5 }, weightKg: 260, stackable: true, maxLoadOnTopKg: 300, maxStackLayers: 2 }),
+  },
+  {
+    key: 'speakers',
+    stop: 2,
+    quantity: 2,
+    contents: '96 units',
+    spec: makeSpec({ name: 'Bluetooth speakers', sku: 'ELC-4655', category: 'Electronics', origin: 'Malaysia', packaging: 'eur-pallet', palletHeight: 0.144, dims: { ...EUR, h: 1.2 }, weightKg: 280, stackable: true, maxLoadOnTopKg: 250, maxStackLayers: 2 }),
+  },
 ];
 
 /** Two floor lanes across the reefer width: left lane y = 0, right lane y = 1.25. */
@@ -176,7 +191,8 @@ const LANE_Y = [0, 1.25];
 /**
  * Deliberately imperfect starting plan on the multi-temp reefer: the stop order is mostly right,
  * but the batteries for stop 2 sit at the doors behind stop-1 freight, and the trailer tandem is
- * slid to its rearmost hole, which overloads the drive tandem. Optimise fixes both.
+ * slid to its rearmost hole, which overloads the drive tandem. The jackets and speakers are not
+ * aboard yet: they wait in the warehouse staging lanes. Optimise fixes everything and loads them.
  * [key, unit index, lane, x, orientation]
  */
 const SEED_LAYOUT: [string, number, 0 | 1, number, Orientation][] = [

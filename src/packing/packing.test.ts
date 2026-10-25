@@ -69,7 +69,8 @@ describe('seed scenario', () => {
       for (const a of st.axle.axles) expect(['legal', 'near']).toContain(a.status);
     }
     expect(result.unplaced).toEqual([]);
-    expect(Object.keys(result.placements)).toHaveLength(26);
+    // Every seed unit ends up aboard, including the orders still waiting in the warehouse.
+    expect(Object.keys(result.placements)).toHaveLength(expandUnits(plan).length);
     expect(ev.unplaced).toHaveLength(0);
     expect(ev.violations.filter((v) => v.kind === 'lifo')).toEqual([]);
     expect(result.iterations).toBeGreaterThan(10);
@@ -95,7 +96,8 @@ describe('seed scenario', () => {
     const { result, ev } = run(urgent, { keepExisting: true, maxIterations: 200, timeBudgetMs: 60_000, seed: 42, vehicleIds });
     expect(result.unplaced).toEqual([]);
     expect(ev.violations.filter((v) => v.hard)).toEqual([]);
-    expect(result.moved).toBeLessThanOrEqual(8);
+    // "Most" = at least two thirds of the units already aboard stay where they were.
+    expect(result.moved).toBeLessThanOrEqual(Math.floor(Object.keys(base.placements).length / 3));
     expect(result.placements['line-urgent#0']).toBeDefined();
   }, 10_000);
 

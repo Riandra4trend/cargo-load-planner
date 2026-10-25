@@ -175,7 +175,7 @@ export const DockScene = memo(function DockScene({
                 key={lane.stopId}
                 lane={lane}
                 color={customer?.color ?? "#9a968c"}
-                text={`${lane.stopSeq} · ${customer?.name ?? stop?.name ?? "Stop"}`}
+                text={`Stop ${lane.stopSeq} · ${customer?.name ?? stop?.name ?? ""}`}
               />
             );
           })}

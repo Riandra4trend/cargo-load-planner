@@ -1,7 +1,8 @@
-import { Canvas } from '@react-three/fiber';
+import { Canvas, useThree } from '@react-three/fiber';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Box3, type WebGLRenderer } from 'three';
-import { compartmentFill, compartmentOf, isBulk, orientedSize, placementBox, type Box } from '../domain/geometry';
+import { allowedOrientations, compartmentFill, compartmentOf, expandUnits, isBulk, orientedSize, placementBox, type Box } from '../domain/geometry';
+import { materialColor } from '../domain/materials';
 import type { Id } from '../domain/types';
 import { axleContributions, axleGroups, computeAxleState } from '../physics';
 import { loadingSequence } from '../sim/sequence';
@@ -20,6 +21,7 @@ import { useSceneUi } from './sceneUi';
 import { colorContext, unitColor, type ColorContext } from './palette';
 import { LoadSimulation, simulationLayout, UnloadSimulation } from './Simulation';
 import { dockLayout, type StagingUnit } from './staging';
+import { DumpSite, TankerGantry, WarehouseRacks } from './SiteProps';
 import { TankLayer, type TankFill } from './TankLayer';
 import { TipperLayer } from './TipperLayer';
 import { VehicleModel } from './VehicleModel';
@@ -82,6 +84,8 @@ function SceneContent() {
   const setHover = useStore((s) => s.setHover);
   const view: SceneView = storeView === 'plan' ? '3d' : storeView;
   const look = useSceneUi((s) => s.look);
+  const deliveries = useSceneUi((s) => s.deliveries);
+  const committed = useStore((s) => s.plan);
 
   // An animation started for another vehicle brings that vehicle into view.
   useEffect(() => {
@@ -112,13 +116,41 @@ function SceneContent() {
   );
 
   const sequence = useMemo(() => (animMode === 'load' ? loadingSequence(plan, vehicle.id) : []), [animMode, plan, vehicle.id]);
+  const dragUnitId = drag && drag.ghost.vehicleId === vehicle.id ? drag.unitId : null;
 
-  // Staging lanes depend only on which units (and footprints) the vehicle carries, in loading order.
+  // Waiting goods: unplaced floor units of the committed plan stand in the staging lanes (a unit being
+  // dragged in keeps its slot, so the lanes don't shift). Bulk vehicles load at the gantry / stockpile.
+  const waitingItems = useMemo<CargoItem[]>(() => {
+    if (vehicle.bulk) return [];
+    return expandUnits(committed)
+      .filter((u) => !committed.placements[u.id] && !isBulk(u.spec) && (!plan.placements[u.id] || u.id === dragUnitId))
+      .map((u) => {
+        const orient = allowedOrientations(u.spec)[0];
+        const s = orientedSize(u.spec.dims, orient);
+        return { unit: u, orient, box: { min: { x: 0, y: 0, z: 0 }, max: s } };
+      });
+  }, [committed, plan.placements, dragUnitId, vehicle.bulk]);
+
+  // Forklift deliveries queued for this vehicle (idle view only).
+  const queued = useMemo(() => {
+    if (animMode !== 'idle' || diff) return [];
+    const placed = new Set(vehicleItems.map((it) => it.unit.id));
+    return deliveries.filter((id) => placed.has(id));
+  }, [deliveries, vehicleItems, animMode, diff]);
+  useEffect(() => {
+    // Forget deliveries that are no longer placed here (undo, unplace, other vehicle).
+    const placed = new Set(vehicleItems.map((it) => it.unit.id));
+    const stale = deliveries.filter((id) => !placed.has(id));
+    for (const id of stale) useSceneUi.getState().finishDelivery(id);
+  }, [deliveries, vehicleItems]);
+
+  // Staging lanes: waiting goods at the lane heads, then the vehicle's units in loading order (their
+  // slots are where the load simulation and forklift deliveries pick them up).
   const stagingUnits = useMemo<StagingUnit[]>(() => {
     const byId = new Map(vehicleItems.map((it) => [it.unit.id, it]));
     const ordered = sequence.length ? sequence.map((s) => byId.get(s.unitId)).filter((it): it is CargoItem => !!it) : vehicleItems;
-    return ordered.map((it) => ({ id: it.unit.id, stopId: it.unit.stopId, stopSeq: it.unit.stopSeq, size: orientedSize(it.unit.spec.dims, it.orient) }));
-  }, [vehicleItems, sequence]);
+    return [...waitingItems, ...ordered].map((it) => ({ id: it.unit.id, stopId: it.unit.stopId, stopSeq: it.unit.stopSeq, size: orientedSize(it.unit.spec.dims, it.orient) }));
+  }, [vehicleItems, sequence, waitingItems]);
   const stagingKey = `${vehicle.id}:${vehicle.cargo.l}:${vehicle.cargo.w}|${stagingUnits.map((u) => `${u.id}:${u.stopSeq}:${u.size.x.toFixed(3)}:${u.size.y.toFixed(3)}:${u.size.z.toFixed(3)}`).join('|')}`;
   const stagingRef = useRef({ key: '', dock: dockLayout(vehicle, stagingUnits) });
   if (stagingRef.current.key !== stagingKey) stagingRef.current = { key: stagingKey, dock: dockLayout(vehicle, stagingUnits) };
@@ -132,15 +164,34 @@ function SceneContent() {
   }
   const unloadFrom = unloadTrack.current.from;
 
-  const sim = useMemo(
+  const baseSim = useMemo(
     () => simulationLayout(vehicleItems, animMode, animation.step, sequence, dock, unloadFrom),
     [vehicleItems, animMode, animation.step, sequence, dock, unloadFrom],
   );
+  // Waiting goods in their lanes; queued deliveries wait in their lane until the forklift takes them.
+  const sim = useMemo(() => {
+    const atSlot = (it: CargoItem): CargoItem | null => {
+      const slot = dock.slots.get(it.unit.id);
+      return slot ? { ...it, box: slot } : null;
+    };
+    const waiting = waitingItems.map(atSlot).filter((it): it is CargoItem => !!it);
+    if (!queued.length) return { ...baseSim, items: [...baseSim.items, ...waiting] };
+    const queuedSet = new Set(queued);
+    const head = baseSim.items.find((it) => it.unit.id === queued[0]);
+    const slot = head ? dock.slots.get(head.unit.id) : undefined;
+    const items = baseSim.items.flatMap((it) => (!queuedSet.has(it.unit.id) ? [it] : it.unit.id === queued[0] ? [] : [atSlot(it) ?? it]));
+    return { ...baseSim, items: [...items, ...waiting], current: head && slot ? { item: head, slot } : null };
+  }, [baseSim, waitingItems, queued, dock]);
+  const deliveryCount = useRef(0);
+  const finishDelivery = useCallback((unitId: Id) => {
+    deliveryCount.current++;
+    useSceneUi.getState().finishDelivery(unitId);
+  }, []);
+  const laneBoxOf = useCallback((unitId: Id) => (waitingItems.some((it) => it.unit.id === unitId) ? dock.slots.get(unitId) : undefined), [waitingItems, dock]);
 
   const colors = useMemo(() => colorContext(plan, evaluation.units, colorMode), [plan, evaluation.units, colorMode]);
   const colorsStable = useStableColors(colors);
 
-  const dragUnitId = drag && drag.ghost.vehicleId === vehicle.id ? drag.unitId : null;
   const layerItems = useMemo(() => (dragUnitId ? sim.items.filter((it) => it.unit.id !== dragUnitId) : sim.items), [sim.items, dragUnitId]);
 
   const axleIds = useMemo<ReadonlySet<Id>>(() => {
@@ -189,13 +240,23 @@ function SceneContent() {
   const fit = useMemo(() => {
     const e = layout.extents;
     const box: Box = { min: { x: e.minX, y: e.minY, z: e.minZ }, max: { x: e.maxX, y: e.maxY, z: e.maxZ } };
-    if (animMode !== 'idle') {
+    if (animMode === 'idle' && view === '3d' && !vehicle.bulk) {
+      // Normal 3D view: the truck plus the front of the warehouse (lanes, forklift and racking).
+      box.max.x = Math.max(box.max.x, dock.wallX + 7);
+      box.max.y = Math.max(box.max.y, dock.rack.toY);
+      box.max.z = Math.max(box.max.z, 4.3);
+    } else if (animMode === 'idle' && view === '3d' && vehicle.kind === 'tipper') {
+      // Dump trucks: include the stockpile and the wheel loader (see DumpSite).
+      box.max.x = Math.max(box.max.x, vehicle.cargo.l + 6.5);
+      box.min.y = Math.min(box.min.y, -4.6);
+      box.max.y = Math.max(box.max.y, vehicle.cargo.w + 6.2);
+    } else if (animMode !== 'idle') {
       box.max.x = Math.max(box.max.x, dock.floor.maxX);
       box.min.y = Math.min(box.min.y, dock.lanes[0]?.minY ?? box.min.y);
       box.max.y = Math.max(box.max.y, dock.lanes[dock.lanes.length - 1]?.maxY ?? box.max.y);
     }
     return toBox3(box);
-  }, [layout, animMode, dock]);
+  }, [layout, animMode, dock, view, vehicle.bulk, vehicle.kind, vehicle.cargo.l, vehicle.cargo.w]);
   // Refit on plan switches and geometry changes too: switching presets or loading another plan keeps vehicle ids.
   const ext = layout.extents;
   const fitKey = `${plan.id}:${vehicle.id}:${animMode}:${[ext.minX, ext.maxX, ext.minY, ext.maxY, ext.maxZ].map((n) => n.toFixed(1)).join(',')}`;
@@ -233,7 +294,7 @@ function SceneContent() {
     if (p && p.vehicleId !== s.ui.activeVehicleId) s.setActiveVehicle(p.vehicleId);
   }, [focus]);
 
-  const onUnitPointerDown = useDragController(vehicle, animMode === 'idle' && !diff);
+  const onUnitPointerDown = useDragController(vehicle, animMode === 'idle' && !diff, laneBoxOf);
   const dropPreview = useCargoDrops(vehicle, animMode === 'idle' && !diff);
   const onUnitHover = useCallback((id: Id | null) => setHover(id), [setHover]);
 
@@ -241,6 +302,12 @@ function SceneContent() {
   const leavingColors = useMemo(() => new Map(sim.leaving.map(({ item }) => [item.unit.id, unitColor(item.unit, colorsStable)])), [sim.leaving, colorsStable]);
   const maxStop = useMemo(() => [...vehicleItems, ...tankFills].reduce((m, it) => Math.max(m, it.unit.stopSeq), 0), [vehicleItems, tankFills]);
   const fillStep = animMode === 'load' && !!sequence[animation.step]?.compartmentId;
+  // Dump-truck stockpile: the plan's first dry bulk material.
+  const siteMaterialColor = useMemo(() => {
+    const solid = plan.lines.find((l) => l.spec.material?.state === 'solid')?.spec.material;
+    return materialColor(solid?.materialId ?? 'custom', 'solid');
+  }, [plan.lines]);
+  useDeliverySkip(queued.length > 0);
 
   if (!veval) return null;
   return (
@@ -307,24 +374,60 @@ function SceneContent() {
       {shownAxle && <AxleLabels vehicle={vehicle} axle={shownAxle} groupX={layout.groupX} units={units} />}
       {shownAxle?.cog && <CogMarker cog={shownAxle.cog} vehicle={vehicle} />}
       {animMode === 'idle' && <Callouts violations={veval.violations} boxes={calloutBoxes} />}
-      {animMode === 'load' && (
-        <LoadSimulation
-          dock={dock}
-          current={sim.current}
-          step={animation.step}
-          total={sequence.length}
-          playing={animation.playing}
-          speed={animation.speed}
-          color={sim.current ? unitColor(sim.current.item.unit, colorsStable) : null}
-          realistic={look === 'realistic'}
-          waiting={fillStep}
-        />
-      )}
+      {!vehicle.bulk &&
+        (animMode === 'load' ? (
+          <LoadSimulation
+            dock={dock}
+            current={sim.current}
+            step={animation.step}
+            total={sequence.length}
+            playing={animation.playing}
+            speed={animation.speed}
+            color={sim.current ? unitColor(sim.current.item.unit, colorsStable) : null}
+            realistic={look === 'realistic'}
+            waiting={fillStep}
+          />
+        ) : (
+          // Parked by the lanes, or carrying queued deliveries into the truck one by one.
+          <LoadSimulation
+            dock={dock}
+            current={animMode === 'idle' ? sim.current : null}
+            step={deliveryCount.current}
+            total={queued.length}
+            playing={animMode === 'idle'}
+            speed={1}
+            color={sim.current ? unitColor(sim.current.item.unit, colorsStable) : null}
+            realistic={look === 'realistic'}
+            waiting={false}
+            onDone={() => sim.current && finishDelivery(sim.current.item.unit.id)}
+          />
+        ))}
+      {vehicle.kind === 'tanker' && <TankerGantry vehicle={vehicle} />}
+      {vehicle.kind === 'tipper' && <DumpSite vehicle={vehicle} color={siteMaterialColor} />}
+      {!vehicle.bulk && <WarehouseRacks rack={dock.rack} />}
       {animMode === 'unload' && (
         <UnloadSimulation vehicle={vehicle} leaving={sim.leaving} step={animation.step} maxStep={maxStop} playing={animation.playing} speed={animation.speed} colors={leavingColors} realistic={look === 'realistic'} />
       )}
     </>
   );
+}
+
+/** A click in the viewport or Esc skips the remaining forklift deliveries (they are already placed). */
+function useDeliverySkip(active: boolean): void {
+  const gl = useThree((s) => s.gl);
+  useEffect(() => {
+    if (!active) return;
+    const skip = () => useSceneUi.getState().clearDeliveries();
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') skip();
+    };
+    window.addEventListener('keydown', onKey);
+    gl.domElement.addEventListener('pointerdown', skip);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      gl.domElement.removeEventListener('pointerdown', skip);
+    };
+  }, [active, gl]);
 }
 
 /**

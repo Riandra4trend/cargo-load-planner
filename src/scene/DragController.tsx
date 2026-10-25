@@ -1,12 +1,13 @@
 import { useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { MeshBasicMaterial, Plane, Raycaster, Vector2, Vector3, type Camera } from 'three';
-import { allowedOrientations, boxCenter, expandUnits, orientedSize, placementBox } from '../domain/geometry';
+import { allowedOrientations, boxCenter, expandUnits, isBulk, orientedSize, placementBox, type Box } from '../domain/geometry';
 import type { Id, ItemSpec, Orientation, Placement, Vehicle } from '../domain/types';
 import { validateMove } from '../rules';
 import { useStore } from '../state/store';
 import { boxToThree, threeToCargo, toThree } from './coords';
 import { dragCandidate, dragContext, type DragContext } from './dragMath';
+import { markNextPlacement } from './dropIn';
 import { interaction, syncControls } from './interaction';
 import { SceneLabel } from './labels';
 import { UNIT_BOX } from './materials';
@@ -26,6 +27,10 @@ interface Session {
   started: boolean;
   ctx: DragContext | null;
   origin: Placement | null;
+  /** Waiting unit dragged from its staging lane (not placed yet). */
+  fromLane: boolean;
+  /** The candidate's footprint centre is over the cargo floor (lane drags released elsewhere stay in the lane). */
+  inside: boolean;
   spec: ItemSpec | null;
   orient: Orientation;
   /** Offset from the pointer's floor hit to the unit's footprint centre (cargo x / y). */
@@ -61,7 +66,11 @@ export function pointerToCargoPlane(raycaster: Raycaster, camera: Camera, ndc: V
  * Drag & drop of placed units on the cargo floor (snap, stack, validate, R rotates, Esc cancels).
  * Returns the pointer-down handler for cargo units (HTML5 drops live in DropController).
  */
-export function useDragController(vehicle: Vehicle, draggable: boolean): (unitId: Id, e: ThreeEvent<PointerEvent>) => void {
+/**
+ * `laneBoxOf` gives the staging-lane box of a waiting (unplaced) unit: such units can be dragged from
+ * their lane into the truck.
+ */
+export function useDragController(vehicle: Vehicle, draggable: boolean, laneBoxOf: (unitId: Id) => Box | undefined): (unitId: Id, e: ThreeEvent<PointerEvent>) => void {
   const get = useThree((s) => s.get);
   const gl = useThree((s) => s.gl);
   const connected = useThree((s) => s.events.connected) as HTMLElement | undefined;
@@ -71,6 +80,8 @@ export function useDragController(vehicle: Vehicle, draggable: boolean): (unitId
   vehicleRef.current = vehicle;
   const draggableRef = useRef(draggable);
   draggableRef.current = draggable;
+  const laneBoxRef = useRef(laneBoxOf);
+  laneBoxRef.current = laneBoxOf;
 
   const toNdc = useCallback(
     (clientX: number, clientY: number, out: Vector2) => {
@@ -95,18 +106,26 @@ export function useDragController(vehicle: Vehicle, draggable: boolean): (unitId
   /** Recomputes the candidate from the latest pointer position and publishes it (once per frame). */
   const update = useCallback(() => {
     const s = session.current;
-    if (!s || !s.started || !s.ctx || !s.origin || !s.spec) return;
+    if (!s || !s.started || !s.ctx || !s.spec || (!s.origin && !s.fromLane)) return;
     s.dirty = false;
     const p = pointerToCargo(s.ndc, s.centreY);
     if (!p) return;
     const centre = { x: p.x + s.grab.x, y: p.y + s.grab.y };
-    const pos = dragCandidate(s.ctx, centre, orientedSize(s.spec.dims, s.orient));
+    const size = orientedSize(s.spec.dims, s.orient);
+    const v = vehicleRef.current;
+    s.inside = centre.x > -0.3 && centre.x < v.cargo.l + 0.3 && centre.y > -0.3 && centre.y < v.cargo.w + 0.3;
     const store = useStore.getState();
+    if (s.fromLane && !s.inside) {
+      // Still over the dock: no ghost, the unit stays visible in its lane.
+      if (store.ui.drag) store.setDrag(null);
+      return;
+    }
+    const pos = dragCandidate(s.ctx, centre, size);
     const prev = store.ui.drag;
     if (prev && prev.unitId === s.unitId && prev.ghost.orient === s.orient && prev.ghost.pos.x === pos.x && prev.ghost.pos.y === pos.y && prev.ghost.pos.z === pos.z) return;
-    const ghost: Placement = { ...s.origin, pos, orient: s.orient };
+    const ghost: Placement = s.origin ? { ...s.origin, pos, orient: s.orient } : { unitId: s.unitId, vehicleId: v.id, pos, orient: s.orient };
     const check = validateMove(store.plan, ghost);
-    s.centreY = pos.y + orientedSize(s.spec.dims, s.orient).y / 2;
+    s.centreY = pos.y + size.y / 2;
     store.setDrag({ unitId: s.unitId, ghost, valid: check.ok, reasons: check.reasons, origin: s.origin });
   }, [pointerToCargo]);
 
@@ -123,19 +142,23 @@ export function useDragController(vehicle: Vehicle, draggable: boolean): (unitId
       if (!s.started) {
         if (!s.draggable || Math.hypot(ev.clientX - s.startX, ev.clientY - s.startY) < DRAG_THRESHOLD_PX) return;
         const { plan } = useStore.getState();
+        const v = vehicleRef.current;
         const origin = plan.placements[s.unitId];
         const unit = expandUnits(plan).find((u) => u.id === s.unitId);
-        if (!origin || !unit || origin.vehicleId !== vehicleRef.current.id) {
+        const laneBox = origin ? undefined : laneBoxRef.current(s.unitId);
+        const fromLane = !!laneBox && !!unit && !isBulk(unit.spec) && !v.bulk;
+        if (!unit || (!fromLane && (!origin || origin.vehicleId !== v.id))) {
           s.draggable = false;
           return;
         }
-        const c = boxCenter(placementBox(origin, unit.spec));
+        const c = boxCenter(laneBox ?? placementBox(origin!, unit.spec));
         const startHit = pointerToCargo(toNdc(s.startX, s.startY, new Vector2()), c.y);
         s.started = true;
-        s.ctx = dragContext(plan, origin.vehicleId, s.unitId);
-        s.origin = origin;
+        s.fromLane = fromLane;
+        s.ctx = dragContext(plan, v.id, s.unitId);
+        s.origin = fromLane ? null : origin;
         s.spec = unit.spec;
-        s.orient = origin.orient;
+        s.orient = origin?.orient ?? allowedOrientations(unit.spec)[0];
         s.centreY = c.y;
         s.grab = startHit ? { x: c.x - startHit.x, y: c.y - startHit.y } : { x: 0, y: 0 };
       }
@@ -154,7 +177,12 @@ export function useDragController(vehicle: Vehicle, draggable: boolean): (unitId
       update();
       const drag = useStore.getState().ui.drag;
       const origin = s.origin;
-      if (drag && origin) {
+      if (s.fromLane) {
+        if (drag && s.inside && drag.valid) {
+          markNextPlacement('none');
+          store.placeUnits([drag.ghost], 'Place unit');
+        } else if (drag && s.inside) store.toast(`Can't place ${s.spec?.name ?? 'unit'} here: ${drag.reasons[0] ?? 'blocked'}`, 'error');
+      } else if (drag && origin) {
         const moved = drag.ghost.orient !== origin.orient || drag.ghost.pos.x !== origin.pos.x || drag.ghost.pos.y !== origin.pos.y || drag.ghost.pos.z !== origin.pos.z;
         if (drag.valid && moved) store.moveUnit(s.unitId, drag.ghost.pos, drag.ghost.orient);
         else if (!drag.valid) store.toast(`Can't place ${s.spec?.name ?? 'unit'} here: ${drag.reasons[0] ?? 'blocked'}`, 'error');
@@ -220,6 +248,8 @@ export function useDragController(vehicle: Vehicle, draggable: boolean): (unitId
       centreY: 0,
       ndc: new Vector2(),
       dirty: false,
+      fromLane: false,
+      inside: false,
     };
     interaction.dragging = true;
     syncControls();

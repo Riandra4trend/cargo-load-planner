@@ -1,12 +1,14 @@
-import { FilePlus2, FileSpreadsheet, PackagePlus, Sparkles, Truck } from 'lucide-react';
+import { FilePlus2, FileSpreadsheet, Forklift, PackagePlus, Sparkles, Square, Truck, Warehouse } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { createSeedPlan, createTankerSeedPlan, createTipperSeedPlan } from '../../data/seed';
 import type { Plan } from '../../domain/types';
-import { useActiveVehicleEval } from '../../state/hooks';
+import { isBulk } from '../../domain/geometry';
+import { useActiveVehicleEval, useEvaluation } from '../../state/hooks';
 import { useStore } from '../../state/store';
 import { CargoPalette } from '../data/CargoPalette';
 import { Button } from '../common/Button';
 import { isCargoDrag } from '../common/dragTypes';
+import { useLoadSimulation } from './navigation';
 
 /** True while cargo is dragged (a palette card or a table row), so overlays let the drop reach the 3D view. */
 function useCargoDragActive(): boolean {
@@ -43,7 +45,7 @@ function EmptyTruckCard({ shifted }: { shifted: boolean }) {
   const dragging = useCargoDragActive();
   if (ve.unitIds.length > 0 || !hasVehicles) return null;
   return (
-    <div className={`pointer-events-none absolute inset-0 z-10 flex items-center justify-center p-4 ${shifted ? 'pl-[356px]' : ''}`}>
+    <div className={`pointer-events-none absolute inset-0 z-10 flex items-center justify-center p-4 pt-24 ${shifted ? 'pl-[356px]' : ''}`}>
       <div
         role="region"
         aria-label="Empty vehicle"
@@ -98,32 +100,74 @@ function EmptyTruckCard({ shifted }: { shifted: boolean }) {
   );
 }
 
+/** Toggles the load-at-dock simulation: starts it for the active vehicle, or stops it while it runs. */
+function useLoadToggle(): { running: boolean; toggle: () => void } {
+  const running = useStore((s) => s.ui.animation.mode === 'load');
+  const setAnimation = useStore((s) => s.setAnimation);
+  const start = useLoadSimulation();
+  return { running, toggle: () => (running ? setAnimation({ mode: 'idle', playing: false, step: 0 }) : start()) };
+}
+
+/** Top-centre chip while packaged units wait in the warehouse (unplaced); hidden during simulations and optimiser runs. */
+function WarehouseChip({ shifted }: { shifted: boolean }) {
+  const evaluation = useEvaluation();
+  const busy = useStore((s) => s.ui.animation.mode !== 'idle' || s.ui.optimise.running || !!s.ui.optimise.diff);
+  const startOptimise = useStore((s) => s.startOptimise);
+  const load = useLoadToggle();
+  const waiting = evaluation.unplaced.filter((u) => !isBulk(u.spec)).length;
+  if (waiting === 0 || busy) return null;
+  return (
+    <div className={`pointer-events-none absolute inset-x-0 top-12 z-10 flex justify-center px-3 ${shifted ? 'pl-[352px]' : ''}`}>
+      <div role="status" className="pointer-events-auto flex items-center gap-2 rounded-full border border-line bg-card/95 py-1 pl-3 pr-1 text-xs shadow-card backdrop-blur-sm">
+        <Warehouse className="h-3.5 w-3.5 text-accent-strong" aria-hidden />
+        <span className="font-medium text-ink">
+          <span className="num">{waiting}</span> unit{waiting === 1 ? '' : 's'} waiting in the warehouse
+        </span>
+        <Button size="sm" variant="primary" className="!h-7 !rounded-full" icon={<Sparkles className="h-3.5 w-3.5" />} onClick={() => startOptimise()} title="Pack the waiting units into the vehicles">
+          Optimise
+        </Button>
+        <Button size="sm" className="!h-7 !rounded-full" icon={<Forklift className="h-3.5 w-3.5" />} onClick={load.toggle} title="Animate the forklift loading sequence at the dock">
+          Load at dock
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 /**
- * Overlays inside the viewport container: the cargo palette drawer (left, ~340 px, its own scroll), a floating
- * "Add cargo" button and the empty-truck card. Everything outside these elements lets pointer events through
- * so orbiting, dragging and drops keep working.
+ * Overlays inside the viewport container: the cargo palette drawer (left, ~340 px, its own scroll), the
+ * bottom-right [Load at dock] [Add cargo] buttons, the warehouse chip (units waiting) and the empty-truck card.
+ * Everything outside these elements lets pointer events through so orbiting, dragging and drops keep working.
  */
 export function ViewportOverlays() {
   const paletteOpen = useStore((s) => s.ui.paletteOpen);
   const setPaletteOpen = useStore((s) => s.setPaletteOpen);
+  const load = useLoadToggle();
   return (
     <>
       <EmptyTruckCard shifted={paletteOpen} />
-      {paletteOpen ? (
+      <WarehouseChip shifted={paletteOpen} />
+      {paletteOpen && (
         <aside aria-label="Add cargo" data-cargo-palette className="absolute inset-y-0 left-0 z-20 flex w-[340px] max-w-[85%] flex-col overflow-hidden border-r border-line bg-card shadow-xl">
           <CargoPalette onClose={() => setPaletteOpen(false)} />
         </aside>
-      ) : (
-        <Button
-          variant="primary"
-          icon={<PackagePlus className="h-4 w-4" />}
-          className="absolute bottom-3 right-3 z-10 shadow-lg"
-          onClick={() => setPaletteOpen(true)}
-          title="Add cargo to the truck (A)"
-        >
-          Add cargo
-        </Button>
       )}
+      <div className="absolute bottom-3 right-3 z-10 flex gap-2">
+        <Button
+          className="shadow-lg"
+          aria-pressed={load.running}
+          icon={load.running ? <Square className="h-3.5 w-3.5" /> : <Forklift className="h-4 w-4" />}
+          onClick={load.toggle}
+          title={load.running ? 'Stop the loading animation' : 'Animate the forklift loading sequence at the dock'}
+        >
+          {load.running ? 'Stop loading' : 'Load at dock'}
+        </Button>
+        {!paletteOpen && (
+          <Button variant="primary" icon={<PackagePlus className="h-4 w-4" />} className="shadow-lg" onClick={() => setPaletteOpen(true)} title="Add cargo to the truck (A)">
+            Add cargo
+          </Button>
+        )}
+      </div>
     </>
   );
 }

@@ -2,7 +2,7 @@ import { Box3, Matrix4, Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
 import { createSeedPlan, makeSpec } from '../data/seed';
 import { BUILT_IN_TEMPLATES } from '../data/templates';
-import { allowedOrientations, ORIENTATION_AXES, orientedSize, placementBox } from '../domain/geometry';
+import { allowedOrientations, boxesOverlap, ORIENTATION_AXES, orientedSize, placementBox } from '../domain/geometry';
 import { createVehicle } from '../domain/presets';
 import type { ItemSpec, Orientation, Plan } from '../domain/types';
 import { threeToCargo, toThree, vecToThree } from './coords';
@@ -13,7 +13,10 @@ import { buildGoodsModel, disposeGoodsModel, liquidFraction } from './goods/mode
 import { goodsInstanceMatrix, orientationRotation } from './goods/orientation';
 import { axleLoadText } from './sceneFormat';
 import type { StoreState } from '../state/store';
-import { dropInProgress, dropInsActive, DROP_MS, trackDropIns } from './dropIn';
+import { dropInProgress, dropInsActive, DROP_MS, markNextPlacement, trackDropIns } from './dropIn';
+import { useSceneUi } from './sceneUi';
+import { forkliftRoute, returnRoute } from './Simulation';
+import { rackStock } from './SiteProps';
 import { dockLayout } from './staging';
 import { chordWidth, compartmentAtX, liquidLevel, tankBarrel } from './tankMath';
 import { unitParts } from './unitParts';
@@ -310,11 +313,23 @@ describe('drop-in animation tracking', () => {
   const unitId = Object.keys(base.placements)[0];
   const without: Plan = { ...base, placements: Object.fromEntries(Object.entries(base.placements).filter(([id]) => id !== unitId)) };
 
-  it('animates units placed by a new edit only', () => {
+  it('drops in units placed at the cursor and queues other new placements for the forklift', () => {
+    markNextPlacement('drop');
     trackDropIns(state(without), state(base, { past: [without] }), 1000);
     expect(dropInProgress(unitId, 1000, DROP_MS)).toBe(0);
     expect(dropInProgress(unitId, 1000 + DROP_MS, DROP_MS)).toBe(1);
     expect(dropInsActive(5000)).toBe(false);
+    expect(useSceneUi.getState().deliveries).toEqual([]);
+
+    trackDropIns(state(without), state(base, { past: [without] }), 2000);
+    expect(useSceneUi.getState().deliveries).toEqual([unitId]);
+    expect(dropInsActive(2001)).toBe(false);
+    useSceneUi.getState().clearDeliveries();
+
+    markNextPlacement('none');
+    trackDropIns(state(without), state(base, { past: [without] }), 3000);
+    expect(useSceneUi.getState().deliveries).toEqual([]);
+    expect(dropInsActive(3001)).toBe(false);
   });
 
   it('ignores undo / redo jumps, plan switches, simulations and optimiser accepts', () => {
@@ -324,5 +339,58 @@ describe('drop-in animation tracking', () => {
     trackDropIns(state(without), state(base, { mode: 'load' }), 1000);
     trackDropIns(state(without, { diff: true }), state(base), 1000);
     expect(dropInsActive(1001)).toBe(false);
+    expect(useSceneUi.getState().deliveries).toEqual([]);
+  });
+});
+
+describe('warehouse staging and forklift', () => {
+  const plan = createSeedPlan();
+  const v = plan.vehicles[0];
+  const unit = (id: string, stopSeq: number) => ({ id, stopId: `stop-${stopSeq}`, stopSeq, size: { x: 1.2, y: 0.8, z: 1.5 } });
+
+  it('gives N waiting units non-overlapping slots in their stop lanes behind the dock face, beside the racking', () => {
+    const waiting = [unit('a', 1), unit('b', 1), unit('c', 2), unit('d', 2), unit('e', 2)];
+    const dock = dockLayout(v, waiting);
+    expect(dock.lanes.map((l) => l.stopSeq)).toEqual([1, 2]);
+    const boxes = waiting.map((u) => dock.slots.get(u.id)!);
+    boxes.forEach((b, i) => {
+      expect(b.min.x).toBeGreaterThan(dock.wallX);
+      const lane = dock.lanes.find((l) => l.stopSeq === waiting[i].stopSeq)!;
+      expect(b.min.y).toBeGreaterThanOrEqual(lane.minY - 1e-9);
+      expect(b.max.y).toBeLessThanOrEqual(lane.maxY + 1e-9);
+      for (let j = 0; j < i; j++) expect(boxesOverlap(b, boxes[j], 0.001)).toBe(false);
+    });
+    expect(dock.rack.fromY).toBeGreaterThan(Math.max(...dock.lanes.map((l) => l.maxY)));
+    expect(dock.floor.maxY).toBeGreaterThan(dock.rack.toY);
+    const stock = rackStock(dock.rack);
+    expect(stock.length).toBeGreaterThan(10);
+    for (const s of stock) expect(s.pos.x).toBeGreaterThanOrEqual(dock.rack.fromX);
+  });
+
+  it('routes the forklift from its spot to the lane slot, back to the aisle, through the door to the target', () => {
+    const dock = dockLayout(v, [unit('a', 1)]);
+    const slot = dock.slots.get('a')!;
+    const target = { min: { x: 10, y: 0.5, z: 0 }, max: { x: 11.2, y: 1.3, z: 1.5 } };
+    const route = forkliftRoute(dock.home, slot, target, dock.wallX);
+    expect(route.approach[0]).toEqual(dock.home);
+    const pickup = route.approach[route.approach.length - 1];
+    expect(pickup.x).toBeCloseTo(slot.min.x - 0.03, 9);
+    expect(pickup.y).toBeCloseTo((slot.min.y + slot.max.y) / 2, 9);
+    expect(route.carry[0]).toEqual(pickup);
+    const drop = route.carry[route.carry.length - 1];
+    expect(drop).toEqual({ x: target.max.x + 0.03, y: 0.9 });
+    // Through the dock door: the last leg runs straight along x at the target's y.
+    expect(route.carry[route.carry.length - 2].y).toBeCloseTo(0.9, 9);
+    expect(route.carry[route.carry.length - 2].x).toBeGreaterThan(dock.wallX);
+  });
+
+  it('drives the forklift straight out of the truck before heading to its parking spot', () => {
+    const dock = dockLayout(v, [unit('a', 1)]);
+    const inside = { x: 9, y: 1.2 };
+    const back = returnRoute(inside, dock.home, dock.wallX);
+    expect(back[0]).toEqual(inside);
+    expect(back[1]).toEqual({ x: dock.wallX + 1.3, y: 1.2 });
+    expect(back[back.length - 1]).toEqual(dock.home);
+    expect(returnRoute(dock.home, dock.home, dock.wallX)).toHaveLength(2);
   });
 });

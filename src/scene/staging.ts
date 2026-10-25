@@ -39,7 +39,15 @@ export interface DockLayout {
   slots: Map<Id, Box>;
   /** Forklift parking spot (fork heel, cargo x / y). */
   home: { x: number; y: number };
+  /** Pallet racking along the far side of the lanes (cargo x / y footprint, number of bays). */
+  rack: { fromX: number; toX: number; fromY: number; toY: number; bays: number };
 }
+
+/** Pallet racking: bays along the far side of the lanes, each bay 2.7 m wide and 1.1 m deep. */
+export const RACK_BAY = 2.7;
+const RACK_DEPTH = 1.1;
+const RACK_BAYS = 3;
+const RACK_START = 0.8;
 
 /**
  * Dock behind the rear doors: one colour-coded staging lane per stop, side by side across the
@@ -92,11 +100,19 @@ export function dockLayout(vehicle: Vehicle, units: readonly StagingUnit[]): Doc
   const lanesMinY = lanes.length ? lanes[0].minY : 0;
   const lanesMaxY = lanes.length ? lanes[lanes.length - 1].maxY : vehicle.cargo.w;
   const lanesMaxX = lanes.reduce((m, l) => Math.max(m, l.maxX), startX + 4);
+  const rackY0 = Math.max(vehicle.cargo.w + 1.2, lanesMaxY + 1.2);
   const floor = {
     minX: wallX,
-    maxX: lanesMaxX + 1.5,
+    maxX: Math.max(lanesMaxX + 1.5, wallX + RACK_START + RACK_BAYS * RACK_BAY + 1),
     minY: Math.min(-3, lanesMinY - 1.5),
-    maxY: Math.max(vehicle.cargo.w + 3, lanesMaxY + 1.5),
+    maxY: rackY0 + RACK_DEPTH + 0.8,
   };
-  return { wallX, floor, lanes, slots, home: { x: wallX + AISLE * 0.55, y: floor.minY + 1.2 } };
+  return {
+    wallX,
+    floor,
+    lanes,
+    slots,
+    home: { x: wallX + AISLE * 0.55, y: floor.minY + 1.2 },
+    rack: { fromX: wallX + RACK_START, toX: wallX + RACK_START + RACK_BAYS * RACK_BAY, fromY: rackY0, toY: rackY0 + RACK_DEPTH, bays: RACK_BAYS },
+  };
 }
