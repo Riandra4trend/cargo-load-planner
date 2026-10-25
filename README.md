@@ -65,7 +65,8 @@ Plan truck, trailer and container loads in 3D, in the browser. Define your cargo
   Stop colours show on corner boards and labels. A Blocks mode switches to plain coloured boxes for analysis.
 - Drag to move or stack (R rotates, Esc cancels); illegal drops show a red ghost with the reasons. Side and top views are orthographic; the Plan view is a printable dimensioned floor plan + side elevation.
 - Colour by stop, customer, temperature, hazmat or weight.
-- "Load at dock": an animated forklift loads the plan from colour-coded staging lanes, with a numbered step list. The unload simulation steps through the stops.
+- The warehouse beside the dock is always in view: racks of stock, colour-coded staging lanes holding the orders that are not loaded yet (drag them from the lane into the truck), and a forklift that drives newly added cargo into the truck. The mixed-freight demo starts with 4 pallets waiting in the warehouse; Optimise loads them. Tankers get a loading gantry and dump trucks a stockpile with a wheel loader.
+- "Load at dock": an animated forklift loads the whole plan from the staging lanes, with a numbered step list. The unload simulation steps through the stops.
 
 **Files and sharing**
 - Autosave, named plans, JSON export/import (exact round trip), share links (plan compressed into the URL), print/PDF report, PNG snapshot, undo/redo, metric/imperial toggle everywhere.

@@ -12,6 +12,7 @@ import { addCargoToVehicle } from '../ui/data/placement';
 import { boxToThree, toThree } from './coords';
 import { ghostMaterials, pointerToCargoPlane } from './DragController';
 import { dragCandidate, dragContext } from './dragMath';
+import { markNextPlacement } from './dropIn';
 import { SceneLabel } from './labels';
 import { UNIT_BOX } from './materials';
 import { compartmentAtX } from './tankMath';
@@ -220,6 +221,8 @@ export function useCargoDrops(vehicle: Vehicle, enabled: boolean): DropPreview |
         store.toast(c.label ? `Can't fill ${c.label} with ${name}: ${c.reason || 'blocked'}` : `Can't place ${name} here: ${c.reason || 'blocked'}`, 'error');
         return;
       }
+      // Dropped at the cursor: a short drop-in, not a forklift delivery.
+      markNextPlacement('drop');
       if (payload.kind === 'unit') {
         if (c.candidate.compartmentId) store.assignCompartment(payload.unitId, v.id, c.candidate.compartmentId);
         else store.placeUnits([c.candidate], 'Place unit');

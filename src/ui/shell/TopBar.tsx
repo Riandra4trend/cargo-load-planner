@@ -80,7 +80,7 @@ function PlanName() {
           e.currentTarget.blur();
         }
       }}
-      className="h-8 w-full min-w-0 max-w-[260px] truncate rounded-lg border border-transparent bg-transparent px-2 text-sm font-medium text-ink-soft hover:border-line focus:border-accent focus:bg-card focus:outline-none focus:ring-2 focus:ring-accent/25"
+      className="h-8 w-full min-w-0 max-w-[150px] truncate rounded-lg border border-transparent bg-transparent px-2 text-sm font-medium text-ink-soft hover:border-line focus:border-accent focus:bg-card focus:outline-none focus:ring-2 focus:ring-accent/25 min-[1800px]:max-w-[260px]"
     />
   );
 }
@@ -92,20 +92,20 @@ function MetaChips() {
   const chip = 'flex items-center gap-1.5 whitespace-nowrap rounded-lg px-2 py-1 text-xs text-ink-soft hover:bg-black/5 focus-visible:outline-2 focus-visible:outline-accent';
   return (
     <div className="hidden items-center gap-0.5 lg:flex">
-      <button type="button" className={chip} onClick={() => openDialog('settings', true)} title="Edit plan details">
+      <button type="button" className={chip} onClick={() => openDialog('settings', true)} title={`${formatPlanDate(meta.date)}, ${meta.time} · edit plan details`}>
         <CalendarClock className="h-3.5 w-3.5 text-muted" aria-hidden />
         <span className="num font-medium text-ink">{meta.time}</span>
-        <span>{formatPlanDate(meta.date)}</span>
+        <span className="hidden min-[1800px]:inline">{formatPlanDate(meta.date)}</span>
       </button>
       {meta.dock && (
-        <button type="button" className={chip} onClick={() => openDialog('settings', true)} title="Edit plan details">
+        <button type="button" className={`${chip} !hidden min-[1800px]:!flex`} onClick={() => openDialog('settings', true)} title="Edit plan details">
           <Warehouse className="h-3.5 w-3.5 text-muted" aria-hidden />
           {meta.dock}
         </button>
       )}
       <button type="button" className={chip} onClick={() => openDialog('settings', true)} title="Edit plan details">
         <Route className="h-3.5 w-3.5 text-muted" aria-hidden />
-        {meta.route && <span className="font-medium text-ink">{meta.route}</span>}
+        {meta.route && <span className="hidden font-medium text-ink min-[1800px]:inline">{meta.route}</span>}
         <span>
           {stops} stop{stops === 1 ? '' : 's'}
         </span>
@@ -221,8 +221,8 @@ export function TopBar({ sidebarOpen, onToggleSidebar }: { sidebarOpen: boolean;
       </IconButton>
       <div className="flex min-w-0 items-center gap-2">
         <LogoMark />
-        <span className="hidden whitespace-nowrap text-[15px] font-semibold tracking-tight sm:inline">LoadPlanner 3D</span>
-        <span className="hidden h-5 w-px bg-line sm:block" aria-hidden />
+        <span className="hidden whitespace-nowrap text-[15px] font-semibold tracking-tight min-[1800px]:inline">LoadPlanner 3D</span>
+        <span className="hidden h-5 w-px bg-line min-[1800px]:block" aria-hidden />
         <PlanName />
       </div>
       <MetaChips />
@@ -238,10 +238,10 @@ export function TopBar({ sidebarOpen, onToggleSidebar }: { sidebarOpen: boolean;
           Add cargo
         </Button>
         <Button icon={<Siren className="h-4 w-4" />} onClick={() => openDialog('urgent', true)} title="Add an urgent order and re-optimise">
-          <span className="hidden min-[1800px]:inline">Urgent order</span>
+          <span className="hidden min-[1440px]:inline">Urgent order</span>
         </Button>
         <Button icon={<Forklift className="h-4 w-4" />} onClick={startLoadSimulation} title="Animate the forklift loading sequence at the dock">
-          <span className="hidden min-[1800px]:inline">Load at dock</span>
+          <span className="hidden min-[1440px]:inline">Load at dock</span>
         </Button>
         <OptimiseButton />
         <span className="hidden h-6 w-px bg-line md:block" aria-hidden />

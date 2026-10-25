@@ -13,6 +13,8 @@ import { UnitMesh } from './UnitMesh';
 
 /** Seconds per forklift move at speed 1. */
 const LOAD_STEP_S = 1.6;
+/** Forklift speed when driving back to its parking spot, m/s at speed 1. */
+const RETURN_SPEED = 6;
 /** Seconds for one stop's units to leave the vehicle at speed 1, and the pause before the next stop. */
 export const UNLOAD_STEP_S = 1.8;
 const UNLOAD_HOLD_S = 0.6;
@@ -64,7 +66,7 @@ export function simulationLayout(
   return { items, current, leaving };
 }
 
-interface P2 {
+export interface P2 {
   x: number;
   y: number;
 }
@@ -90,6 +92,42 @@ class Path {
   }
 }
 
+/** Forklift route in the cargo x-y plane (fork heel positions). */
+export interface ForkliftRoute {
+  /** From where the forklift stands to the pick-up point in front of the lane slot. */
+  approach: P2[];
+  /** From the pick-up point back to the aisle, through the dock door to the drop point. */
+  carry: P2[];
+}
+
+/**
+ * Route for moving a unit from its staging-lane `slot` to its `target` box in the truck: drive (via the
+ * aisle) to the slot, pick it up facing +x, back out to the aisle, turn and drive through the dock door
+ * at the dock face `wallX` to just behind the target's rear face.
+ */
+export function forkliftRoute(start: P2, slot: Box, target: Box, wallX: number): ForkliftRoute {
+  const sy = (slot.min.y + slot.max.y) / 2;
+  const ty = (target.min.y + target.max.y) / 2;
+  const aisleX = slot.min.x - 1.5;
+  const pickup = { x: slot.min.x - 0.03, y: sy };
+  const approach: P2[] = [{ x: start.x, y: start.y }];
+  if (start.x < wallX + 0.5) approach.push({ x: wallX + 1.3, y: start.y });
+  approach.push({ x: aisleX, y: sy }, pickup);
+  const door = { x: wallX + 1.0 + (target.max.x - target.min.x), y: ty };
+  return { approach, carry: [pickup, { x: aisleX, y: sy }, door, { x: target.max.x + 0.03, y: ty }] };
+}
+
+/**
+ * Way back to the parking spot: first straight out of the truck along x (the lane it came in by) to the
+ * aisle beyond the dock face, then across the dock to `home`.
+ */
+export function returnRoute(from: P2, home: P2, wallX: number): P2[] {
+  const pts: P2[] = [{ x: from.x, y: from.y }];
+  if (from.x < wallX + 1.3) pts.push({ x: wallX + 1.3, y: from.y });
+  pts.push({ x: home.x, y: home.y });
+  return pts;
+}
+
 const ease = (t: number): number => (t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2);
 const clamp01 = (t: number): number => Math.min(1, Math.max(0, t));
 const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
@@ -105,9 +143,10 @@ interface ForkPose {
 /**
  * Load at dock: the forklift picks the current step's unit from its staging lane (approaching from
  * the aisle, forks toward +x), reverses out, turns, drives through the rear doors and sets the unit
- * down at its planned position, then backs off. Advances `ui.animation.step` after each move.
+ * down at its planned position, then backs off. Advances `ui.animation.step` after each move (or
+ * calls `onDone` for deliveries). Without a current unit it is the forklift parked by the lanes.
  */
-export function LoadSimulation({ dock, current, step, total, playing, speed, color, realistic, waiting }: {
+export function LoadSimulation({ dock, current, step, total, playing, speed, color, realistic, waiting, onDone }: {
   dock: DockLayout;
   current: SimulationLayout['current'];
   step: number;
@@ -118,6 +157,8 @@ export function LoadSimulation({ dock, current, step, total, playing, speed, col
   realistic: boolean;
   /** The current step is driven elsewhere (a tank compartment filling): park and keep playing. */
   waiting: boolean;
+  /** Forklift deliveries outside the load simulation: called after each move instead of advancing the animation step. */
+  onDone?: () => void;
 }) {
   const rootRef = useRef<Group>(null);
   const carriageRef = useRef<Group>(null);
@@ -127,6 +168,7 @@ export function LoadSimulation({ dock, current, step, total, playing, speed, col
   const last = useRef<ForkPose>({ x: dock.home.x, y: dock.home.y, heading: 0, forkZ: 0.02 });
   const pose = useRef<ForkPose>({ ...last.current });
   const scratch = useRef<P2>({ x: 0, y: 0 });
+  const returning = useRef<{ path: Path; k: number; duration: number; heading: number; forkZ: number } | null>(null);
 
   // Manual jumps (step list, step buttons) restart the move from the parking spot.
   useLayoutEffect(() => {
@@ -140,19 +182,12 @@ export function LoadSimulation({ dock, current, step, total, playing, speed, col
     if (!current) return null;
     const { slot } = current;
     const target = current.item.box;
-    const s = boxCenter(slot);
-    const t = boxCenter(target);
     const start = last.current;
-    const aisleX = slot.min.x - 1.5;
-    const pickup = { x: slot.min.x - 0.03, y: s.y };
-    const approachPts: P2[] = [{ x: start.x, y: start.y }];
-    if (start.x < dock.wallX + 0.5) approachPts.push({ x: dock.wallX + 1.3, y: start.y });
-    approachPts.push({ x: aisleX, y: s.y }, pickup);
-    const door = { x: dock.wallX + 1.0 + (target.max.x - target.min.x), y: t.y };
-    const drop = { x: target.max.x + 0.03, y: t.y };
+    const route = forkliftRoute(start, slot, target, dock.wallX);
+    const drop = route.carry[route.carry.length - 1];
     return {
-      approach: new Path(approachPts),
-      carry: new Path([pickup, { x: aisleX, y: s.y }, door, drop]),
+      approach: new Path(route.approach),
+      carry: new Path(route.carry),
       startHeading: start.heading,
       startForkZ: start.forkZ,
       drop,
@@ -169,8 +204,33 @@ export function LoadSimulation({ dock, current, step, total, playing, speed, col
     if (!root || !carriage) return;
     const p = pose.current;
     if (!plan) {
-      Object.assign(p, last.current);
+      // No move in hand: drive back out of the truck to the parking spot beside the lanes.
+      let ret = returning.current;
+      const home = dock.home;
+      if (!ret && (Math.hypot(p.x - home.x, p.y - home.y) > 0.02 || p.heading !== 0 || p.forkZ !== 0.02)) {
+        const path = new Path(returnRoute(p, home, dock.wallX));
+        ret = { path, k: 0, duration: Math.min(1.8, Math.max(0.4, path.total / RETURN_SPEED)), heading: p.heading, forkZ: p.forkZ };
+        returning.current = ret;
+      }
+      if (ret) {
+        ret.k = Math.min(1, ret.k + (delta * Math.max(1, speed)) / ret.duration);
+        const pt = scratch.current;
+        ret.path.at(ease(ret.k), pt);
+        p.x = pt.x;
+        p.y = pt.y;
+        p.heading = lerp(ret.heading, 0, ease(ret.k));
+        p.forkZ = lerp(ret.forkZ, 0.02, ease(ret.k));
+        if (ret.k >= 1) {
+          returning.current = null;
+          p.x = home.x;
+          p.y = home.y;
+          p.heading = 0;
+          p.forkZ = 0.02;
+        }
+        Object.assign(last.current, p);
+      }
     } else {
+      returning.current = null;
       if (playing) progress.current = Math.min(1, progress.current + (delta * speed) / LOAD_STEP_S);
       const k = progress.current;
       const pt = scratch.current;
@@ -224,8 +284,9 @@ export function LoadSimulation({ dock, current, step, total, playing, speed, col
       last.current = { x: p.x, y: p.y, heading: 0, forkZ: p.forkZ };
       progress.current = 0;
       expectedStep.current = step + 1;
-      useStore.getState().setAnimation(step + 1 >= total ? { step: step + 1, playing: false } : { step: step + 1 });
-    } else if (!plan && playing && !waiting) {
+      if (onDone) onDone();
+      else useStore.getState().setAnimation(step + 1 >= total ? { step: step + 1, playing: false } : { step: step + 1 });
+    } else if (!plan && playing && !waiting && !onDone) {
       useStore.getState().setAnimation({ playing: false });
     }
   });

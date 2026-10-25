@@ -72,7 +72,8 @@ export function SceneLabel({ position, zIndex = 10, interactive = false, childre
 export function LabelLayer({ store }: { store: LabelStore }) {
   const list = useSyncExternalStore(store.subscribe, store.snapshot);
   return (
-    <div className="pointer-events-none absolute inset-0 overflow-hidden">
+    // Own stacking context at z 0: labels never cover the app's overlays (buttons, chips, palette).
+    <div className="pointer-events-none absolute inset-0 z-0 overflow-hidden">
       {list.map(([id, e]) => (
         <div
           key={id}
